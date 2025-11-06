@@ -1,0 +1,14 @@
+# Node / TypeScript
+node_modules/
+out/
+dist/
+*.tsbuildinfo
+
+# VS Code
+.vscode/**/*
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# OS junk
+.DS_Store
+Thumbs.db
