@@ -1,11 +1,11 @@
 // File for parsing KTX2 files
+// | Identifier | Header | Level Index | DFD | KVD | SGD | Mip Level Array |
 
 // Identifier (12 bytes)
 // Header (17 × 4 bytes = 68 bytes)
 // Level Index (levelCount × 24 bytes)
 //// byeOffset, byteLength, uncompressedByteLength
 //// used to locate mip levels in the binary file
-
 async function parseKTX2(arrayBuffer) {
   // Indentifier
   const dv = new DataView(arrayBuffer);
@@ -48,6 +48,7 @@ async function parseKTX2(arrayBuffer) {
     const byteOffset = Number(dv.getBigUint64(offset, true)); offset += 8;
     const byteLength = Number(dv.getBigUint64(offset, true)); offset += 8;
     const uncompressedByteLength = Number(dv.getBigUint64(offset, true)); offset += 8;
+    // TODO: make this into a class
     levels.push({ byteOffset, byteLength, uncompressedByteLength });
   }
 
@@ -104,5 +105,11 @@ function parseKVD(dv, baseOffset, length) {
     offset += padding;
   }
   return kv;
+}
+
+// Mip Level Array
+// for each mip_level in levelCount
+function getLevelData(arrayBuffer, level) {
+  return new Uint8Array(arrayBuffer, level.byteOffset, level.byteLength);
 }
 
