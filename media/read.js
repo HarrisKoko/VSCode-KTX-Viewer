@@ -49,7 +49,13 @@ async function parseKTX2(arrayBuffer) {
     const byteLength = Number(dv.getBigUint64(offset, true)); offset += 8;
     const uncompressedByteLength = Number(dv.getBigUint64(offset, true)); offset += 8;
     // TODO: make this into a class
-    levels.push({ byteOffset, byteLength, uncompressedByteLength });
+    levels.push({ 
+      byteOffset, 
+      byteLength, 
+      uncompressedByteLength,
+      width: Math.max(1, header.pixelWidth >> i),
+      height: Math.max(1, header.pixelHeight >> i)
+    });
   }
 
   return { header, index, levels };
@@ -116,3 +122,6 @@ function getLevelData(arrayBuffer, level) {
   return new Uint8Array(arrayBuffer, level.byteOffset, level.byteLength);
 }
 
+// num_blocks_z = max (1, ceil(floor(pixelDepth * 2^(-p))/block_depth))
+// num_blocks_y = max (1, ceil(floor(pixelHeight * 2^(-p))/block_height))
+// num_blocks_x = max (1, ceil(floor(pixelWidth * 2^(-p))/block_width))

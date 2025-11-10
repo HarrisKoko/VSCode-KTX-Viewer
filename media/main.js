@@ -1,3 +1,5 @@
+import { parseKTX2 } from './read.js';
+
 (async function () {
   const log = (msg) => { const el = document.getElementById('log'); if (el) el.textContent = String(msg); };
 
@@ -100,7 +102,7 @@
     );
     let srcView = srcTex.createView();
 
-    async function loadImageToTexture(file) {
+    async function loadJPGImageToTexture(file) {
       const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
       srcTex.destroy();
       srcTex = device.createTexture({
@@ -120,9 +122,111 @@
       stat.textContent = `Loaded ${file.name} (${srcTex.width || bmp.width}×${srcTex.height || bmp.height})`;
       if (texPipeline) texBindGroup = makeTexBindGroup();
     }
+
+    // Helper Func
+    function vkFormatToGPUFormat(vkFormat) {
+      // Very simplified — expand as needed
+      const map = {
+        37: "rgba8unorm",        // VK_FORMAT_R8G8B8A8_UNORM
+        43: "bgra8unorm",        // VK_FORMAT_B8G8R8A8_UNORM
+        147: "bc7-rgba-unorm",   // VK_FORMAT_BC7_UNORM_BLOCK
+        131: "bc3-rgba-unorm",   // VK_FORMAT_BC3_UNORM_BLOCK
+      };
+      return map[vkFormat] || "rgba8unorm";
+    }
+
+    function bytesPerBlockForFormat(format) {
+      switch (format) {
+        case "rgba8unorm":
+        case "bgra8unorm":
+          return 4;
+        case "bc3-rgba-unorm":
+          return 16;
+        case "bc7-rgba-unorm":
+          return 16;
+        default:
+          return 4;
+      }
+    }
+
+    async function loadKTXImageToTexture(file) {
+      // Read file
+      const arrayBuffer = await file.arrayBuffer();
+
+      // Parse the KTX2 structure
+      const { header, index, levels } = await parseKTX2(arrayBuffer);
+      
+      // Create GPU texture
+      const format = vkFormatToGPUFormat(header.vkFormat);
+      const texture = device.createTexture({
+        size: {
+          width: header.pixelWidth,
+          height: header.pixelHeight,
+          depthOrArrayLayers: header.layerCount || 1
+        },
+        mipLevelCount: header.levelCount,
+        format,
+        usage: GPUTextureUsage.TEXTURE_BINDING |
+              GPUTextureUsage.COPY_DST |
+              GPUTextureUsage.RENDER_ATTACHMENT
+      });
+      
+      // Upload mip levels
+      let mipWidth = header.pixelWidth;
+      let mipHeight = header.pixelHeight;
+
+      for (let i = 0; i < levels.length; i++) {
+        const level = levels[i];
+        const data = new Uint8Array(arrayBuffer, level.byteOffset, level.byteLength);
+
+        const bytesPerBlock = bytesPerBlockForFormat(format);
+        const blockWidth = 4; // usually 4×4 block compression alignment
+        const bytesPerRow = Math.ceil(mipWidth / blockWidth) * bytesPerBlock;
+
+        device.queue.writeTexture(
+          { texture, mipLevel: i },
+          data,
+          {
+            offset: 0,
+            bytesPerRow,
+            rowsPerImage: mipHeight
+          },
+          {
+            width: mipWidth,
+            height: mipHeight,
+            depthOrArrayLayers: 1
+          }
+        );
+
+        mipWidth = Math.max(1, Math.floor(mipWidth / 2));
+        mipHeight = Math.max(1, Math.floor(mipHeight / 2));
+      }
+
+      // Create texture view
+      const textureView = texture.createView();
+
+      // Clean up previous texture if needed
+      srcTex?.destroy();
+      srcTex = texture;
+      srcView = textureView;
+
+      stat.textContent = `Loaded ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${header.levelCount} mip levels)`;
+      if (texPipeline) texBindGroup = makeTexBindGroup();
+    }
     fileInp.addEventListener('change', async () => {
       const f = fileInp.files?.[0];
-      if (f) { try { await loadImageToTexture(f); } catch (e) { console.error(e); log('Load failed: ' + e); } }
+      if (!f) return;
+
+      try {
+        if (f.name.endsWith('.ktx') || f.name.endsWith('.ktx2')) {
+          await loadKTXImageToTexture(f);
+        } else {
+          await loadJPGImageToTexture(f);
+        }
+      } catch (e) {
+        console.error(e);
+        log('Load failed: ' + e.message);
+      }    
     });
 
     // ---------------- Shaders ----------------
