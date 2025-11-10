@@ -109,6 +109,9 @@ function parseKVD(dv, baseOffset, length) {
 
 // Mip Level Array
 // for each mip_level in levelCount
+// const mipLevels = levels.map(level => 
+//  getLevelData(arrayBuffer, level)
+// );
 function getLevelData(arrayBuffer, level) {
   return new Uint8Array(arrayBuffer, level.byteOffset, level.byteLength);
 }
