@@ -1,5 +1,13 @@
+// File for parsing KTX2 files
+
+// Identifier (12 bytes)
+// Header (17 × 4 bytes = 68 bytes)
+// Level Index (levelCount × 24 bytes)
+//// byeOffset, byteLength, uncompressedByteLength
+//// used to locate mip levels in the binary file
 
 async function parseKTX2(arrayBuffer) {
+  // Indentifier
   const dv = new DataView(arrayBuffer);
   const identifier = new Uint8Array(arrayBuffer, 0, 12);
   const KTX2_IDENTIFIER = new Uint8Array([
@@ -10,6 +18,7 @@ async function parseKTX2(arrayBuffer) {
       throw new Error('Invalid KTX2 identifier');
   }
 
+  // Header
   let offset = 12;
   const header = {
     vkFormat: dv.getUint32(offset, true), offset: offset += 4,
@@ -23,6 +32,7 @@ async function parseKTX2(arrayBuffer) {
     supercompressionScheme: dv.getUint32(offset, true), offset: offset += 4,
   };
 
+  // Index
   const index = {
     dfdByteOffset: dv.getUint32(offset, true), offset: offset += 4,
     dfdByteLength: dv.getUint32(offset, true), offset: offset += 4,
@@ -32,6 +42,7 @@ async function parseKTX2(arrayBuffer) {
     sgdByteLength: Number(dv.getBigUint64(offset, true)), offset: offset += 8,
   };
 
+  // Level Index
   const levels = [];
   for (let i = 0; i < Math.max(1, header.levelCount); i++) {
     const byteOffset = Number(dv.getBigUint64(offset, true)); offset += 8;
@@ -42,3 +53,56 @@ async function parseKTX2(arrayBuffer) {
 
   return { header, index, levels };
 }
+
+// Data Format Descriptor
+// call const dfd = parseDFD(dv, index.dfdByteOffset, index.dfdByteLength);
+function parseDFD(dv, baseOffset, length) {
+  const view = new DataView(dv.buffer, baseOffset, length);
+  let offset = 0;
+  const totalSize = view.getUint32(offset, true); offset += 4;
+  const vendorId = view.getUint16(offset, true); offset += 2;
+  const descriptorType = view.getUint16(offset, true); offset += 2;
+  const versionNumber = view.getUint16(offset, true); offset += 2;
+  const descriptorBlockSize = view.getUint16(offset, true); offset += 2;
+
+  const colorModel = view.getUint8(offset++); 
+  const colorPrimaries = view.getUint8(offset++);
+  const transferFunction = view.getUint8(offset++);
+  const flags = view.getUint8(offset++);
+
+  const texelBlockDimension = [
+    view.getUint8(offset++),
+    view.getUint8(offset++),
+    view.getUint8(offset++),
+    view.getUint8(offset++)
+  ];
+
+  const bytesPlane = [];
+  for (let i = 0; i < 8; i++) bytesPlane.push(view.getUint8(offset++));
+
+  return {
+    vendorId, descriptorType, versionNumber,
+    colorModel, colorPrimaries, transferFunction, flags,
+    texelBlockDimension, bytesPlane
+  };
+}
+
+// Key/Value Data
+function parseKVD(dv, baseOffset, length) {
+  const kv = {};
+  let offset = baseOffset;
+  while (offset < baseOffset + length) {
+    const kvByteLength = dv.getUint32(offset, true); offset += 4;
+    const keyBytes = new Uint8Array(dv.buffer, offset, kvByteLength);
+    const keyStr = new TextDecoder().decode(keyBytes);
+    const nullPos = keyStr.indexOf('\0');
+    const key = keyStr.slice(0, nullPos);
+    const value = keyStr.slice(nullPos + 1);
+    kv[key] = value;
+    offset += kvByteLength;
+    const padding = (4 - (kvByteLength % 4)) % 4;
+    offset += padding;
+  }
+  return kv;
+}
+
