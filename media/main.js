@@ -1,20 +1,78 @@
-import { parseKTX2 } from './read.js';
+// main.js — JPG/PNG/WebP renderer + KTX2 (BC7) loader using WebGPU
 
 (async function () {
-  const log = (msg) => { const el = document.getElementById('log'); if (el) el.textContent = String(msg); };
+  // Minimal logger to the on-screen <div id="log">
+  const log = (msg) => {
+    const el = document.getElementById('log');
+    if (el) el.textContent = String(msg);
+  };
+
+  // ---------- Upload helpers ----------
+
+  // For UNCOMPRESSED uploads (e.g., RGBA8), WebGPU requires bytesPerRow to be 256-byte aligned.
+  // This repacks a tightly-packed pixel buffer (width*BPP per row) into a buffer whose rows are padded up to 256B.
+  function padRows(src, width, height, bytesPerPixel = 4) {
+    const rowStride = width * bytesPerPixel;               // bytes in a *tight* row
+    const aligned = Math.ceil(rowStride / 256) * 256;      // next multiple of 256
+    if (aligned === rowStride) return { data: src, bytesPerRow: rowStride }; // no padding needed
+
+    const dst = new Uint8Array(aligned * height);
+    for (let y = 0; y < height; y++) {
+      const s0 = y * rowStride, d0 = y * aligned;
+      dst.set(src.subarray(s0, s0 + rowStride), d0);       // copy row into padded row
+    }
+    return { data: dst, bytesPerRow: aligned };
+  }
+
+  // For COMPRESSED uploads (BC formats), alignment applies to *block rows* not pixel rows.
+  // BC7 uses 4x4 blocks, 16 bytes per block. We must pad each block-row up to 256B.
+  function padBlockRowsBC(src, width, height, bytesPerBlock, blockWidth = 4, blockHeight = 4) {
+    const wBlocks = Math.max(1, Math.ceil(width  / blockWidth));   // number of 4x4 blocks horizontally
+    const hBlocks = Math.max(1, Math.ceil(height / blockHeight));  // number of 4x4 blocks vertically
+    const rowBytes = wBlocks * bytesPerBlock;                       // raw bytes in one block-row
+
+    const aligned = Math.ceil(rowBytes / 256) * 256;                // next multiple of 256
+    if (aligned === rowBytes) {
+      // Already aligned; no repack needed.
+      return { data: src, bytesPerRow: rowBytes, rowsPerImage: hBlocks };
+    }
+
+    const dst = new Uint8Array(aligned * hBlocks);
+    for (let y = 0; y < hBlocks; y++) {
+      const s0 = y * rowBytes, d0 = y * aligned;
+      dst.set(src.subarray(s0, s0 + rowBytes), d0);
+    }
+    return { data: dst, bytesPerRow: aligned, rowsPerImage: hBlocks };
+  }
+
+  // Wait until read.js is loaded (defines window.parseKTX2)
+  async function waitForKTXParser() {
+    let tries = 0;
+    while (typeof window.parseKTX2 !== 'function') {
+      if (tries++ > 500) throw new Error('KTX2 parser not loaded'); // ~5s timeout
+      await new Promise(r => setTimeout(r, 10));
+    }
+  }
 
   try {
+    // ---------- WebGPU availability ----------
     if (!('gpu' in navigator)) { log('WebGPU not available.'); return; }
 
     const canvas  = document.getElementById('gfx');
     const context = canvas.getContext('webgpu');
     if (!context) { log('Failed to get WebGPU context.'); return; }
 
-    // ---------------- Adapter / Device ----------------
+    // ---------- Adapter / Device ----------
+    // Ask for a high-performance adapter and enable BC compression if supported.
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) { log('No GPU adapter.'); return; }
-    const device = await adapter.requestDevice();
 
+    const bcSupported = adapter.features.has('texture-compression-bc');
+    const device = await adapter.requestDevice({
+      requiredFeatures: bcSupported ? ['texture-compression-bc'] : []
+    });
+
+    // Helpful runtime error info
     device.addEventListener?.('uncapturederror', (e) => {
       console.error('WebGPU uncaptured error:', e.error || e);
       log('WebGPU error: ' + (e.error?.message || e.message || 'unknown'));
@@ -22,7 +80,8 @@ import { parseKTX2 } from './read.js';
 
     const format = navigator.gpu.getPreferredCanvasFormat();
 
-    // ---------------- UI ----------------
+    // ---------- Simple UI ----------
+    // Slider for exposure and a file input. Shows a BC7 support badge.
     const ui = document.createElement('div');
     ui.style.position = 'absolute';
     ui.style.right = '12px';
@@ -39,23 +98,29 @@ import { parseKTX2 } from './read.js';
         <span id="evv">0</span>
       </div>
       <div>
-        <input id="file" type="file" accept="image/png, image/jpeg, image/webp">
+        <input id="file" type="file" accept="image/png, image/jpeg, image/webp, .ktx2">
       </div>
       <div id="stat" style="margin-top:6px; opacity:.9;"></div>
+      <div style="margin-top:6px; opacity:.9;">BC7: ${bcSupported ? 'available' : 'not supported'}</div>
     `;
     document.body.appendChild(ui);
+
     const evInput = document.getElementById('ev');
     const evVal   = document.getElementById('evv');
     const fileInp = document.getElementById('file');
     const stat    = document.getElementById('stat');
 
     let exposureEV = 0;
-    evInput.oninput = () => { exposureEV = parseFloat(evInput.value); evVal.textContent = evInput.value; };
+    evInput.oninput = () => {
+      exposureEV = parseFloat(evInput.value);
+      evVal.textContent = evInput.value;
+    };
 
-    // ---------------- Canvas sizing & configure ----------------
+    // ---------- Swapchain configure ----------
+    // Keep DPR=1 for stability inside VS Code webview/Electron.
     let lastW = 0, lastH = 0;
     function configureIfNeeded() {
-      const dpr = 1; // keep stable in Electron
+      const dpr = 1;
       const w = Math.max(1, Math.floor(canvas.clientWidth  * dpr));
       const h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
       if (w !== lastW || h !== lastH) {
@@ -68,25 +133,29 @@ import { parseKTX2 } from './read.js';
     new ResizeObserver(configureIfNeeded).observe(canvas);
     configureIfNeeded();
 
-    // ---------------- Uniforms (pad to 256B) ----------------
+    // ---------- Uniforms ----------
+    // 16-byte aligned struct, but easiest is to allocate 256B to be safe.
     const uniformBuf = device.createBuffer({
       size: 256,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
     function updateUniforms() {
-      const arr = new Float32Array([exposureEV, Math.pow(2, exposureEV), lastW, lastH]);
+      const mul = Math.pow(2, exposureEV);
+      const arr = new Float32Array([exposureEV, mul, lastW, lastH]);
       device.queue.writeBuffer(uniformBuf, 0, arr.buffer);
     }
 
-    // ---------------- Texture + Sampler ----------------
+    // ---------- Texture state ----------
     const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
+    // Bootstrap a tiny 2x2 RGBA8 checker so the pipeline has something to bind.
     function checkerRGBA8() {
       return new Uint8Array([
         255,255,255,255,   32,32,32,255,
          32,32,32,255,   255,255,255,255
       ]);
     }
+
     let srcTex = device.createTexture({
       size: { width: 2, height: 2, depthOrArrayLayers: 1 },
       format: 'rgba8unorm',
@@ -94,16 +163,21 @@ import { parseKTX2 } from './read.js';
            | GPUTextureUsage.COPY_DST
            | GPUTextureUsage.RENDER_ATTACHMENT
     });
-    device.queue.writeTexture(
-      { texture: srcTex },
-      checkerRGBA8(),
-      { bytesPerRow: 2*4 },
-      { width: 2, height: 2 }
-    );
+    {
+      const w = 2, h = 2;
+      const raw = checkerRGBA8();
+      const { data, bytesPerRow } = padRows(raw, w, h);
+      device.queue.writeTexture({ texture: srcTex }, data, { bytesPerRow }, { width: w, height: h });
+    }
     let srcView = srcTex.createView();
 
-    async function loadJPGImageToTexture(file) {
+    // ---------- Loaders ----------
+
+    // Uncompressed images (JPEG/PNG/WebP) via createImageBitmap + copyExternalImageToTexture.
+    async function loadImageToTexture(file) {
       const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+
+      // Destroy previous texture and create a new RGBA8 one.
       srcTex.destroy();
       srcTex = device.createTexture({
         size: { width: bmp.width, height: bmp.height, depthOrArrayLayers: 1 },
@@ -112,124 +186,91 @@ import { parseKTX2 } from './read.js';
              | GPUTextureUsage.COPY_DST
              | GPUTextureUsage.RENDER_ATTACHMENT
       });
+
       device.queue.copyExternalImageToTexture(
         { source: bmp },
         { texture: srcTex },
         { width: bmp.width, height: bmp.height }
       );
+
       srcView = srcTex.createView();
       bmp.close?.();
-      stat.textContent = `Loaded ${file.name} (${srcTex.width || bmp.width}×${srcTex.height || bmp.height})`;
+
+      stat.textContent = `Loaded ${file.name} (${bmp.width}×${bmp.height})`;
       if (texPipeline) texBindGroup = makeTexBindGroup();
     }
 
-    // Helper Func
-    function vkFormatToGPUFormat(vkFormat) {
-      // Very simplified — expand as needed
-      const map = {
-        37: "rgba8unorm",        // VK_FORMAT_R8G8B8A8_UNORM
-        43: "bgra8unorm",        // VK_FORMAT_B8G8R8A8_UNORM
-        147: "bc7-rgba-unorm",   // VK_FORMAT_BC7_UNORM_BLOCK
-        131: "bc3-rgba-unorm",   // VK_FORMAT_BC3_UNORM_BLOCK
-      };
-      return map[vkFormat] || "rgba8unorm";
-    }
+    // KTX2 (BC7) — no transcoding; we upload compressed blocks directly.
+    async function loadKTX2_BC7_ToTexture(file) {
+      if (!bcSupported) throw new Error('BC compressed textures not supported on this device.');
+      await waitForKTXParser();
 
-    function bytesPerBlockForFormat(format) {
-      switch (format) {
-        case "rgba8unorm":
-        case "bgra8unorm":
-          return 4;
-        case "bc3-rgba-unorm":
-          return 16;
-        case "bc7-rgba-unorm":
-          return 16;
-        default:
-          return 4;
-      }
-    }
+      const buf = await file.arrayBuffer();
+      const { header, levels } = await window.parseKTX2(buf); // calls parsektx2 from read.js
 
-    async function loadKTXImageToTexture(file) {
-      // Read file
-      const arrayBuffer = await file.arrayBuffer();
+      // Minimal constraints for this demo
+      const is2D = header.pixelDepth === 0 && header.faceCount === 1;
+      if (!is2D) throw new Error('Only 2D, 1-face KTX2 supported in this demo.');
+      if (header.supercompressionScheme !== 0) throw new Error('Supercompressed KTX2 not supported.');
 
-      // Parse the KTX2 structure
-      const { header, index, levels } = await parseKTX2(arrayBuffer);
-      
-      // Create GPU texture
-      const format = vkFormatToGPUFormat(header.vkFormat);
-      const texture = device.createTexture({
-        size: {
-          width: header.pixelWidth,
-          height: header.pixelHeight,
-          depthOrArrayLayers: header.layerCount || 1
-        },
-        mipLevelCount: header.levelCount,
-        format,
-        usage: GPUTextureUsage.TEXTURE_BINDING |
-              GPUTextureUsage.COPY_DST |
-              GPUTextureUsage.RENDER_ATTACHMENT
+      // Vulkan enum values for BC7
+      const VK_FORMAT_BC7_UNORM_BLOCK = 145;
+      const VK_FORMAT_BC7_SRGB_BLOCK  = 146;
+
+      // Map vkFormat -> WebGPU format
+      let wgpuFormat = null;
+      if (header.vkFormat === VK_FORMAT_BC7_UNORM_BLOCK) wgpuFormat = 'bc7-rgba-unorm';
+      else if (header.vkFormat === VK_FORMAT_BC7_SRGB_BLOCK) wgpuFormat = 'bc7-rgba-unorm-srgb';
+      else throw new Error(`Unsupported vkFormat ${header.vkFormat}; need BC7.`);
+
+      // Top mip only for now (you can loop over levels to upload all mips later)
+      const lvl = levels[0];
+      const bytesPerBlock = 16; // BC7 block = 16 bytes
+      const raw = new Uint8Array(buf, lvl.byteOffset, lvl.byteLength);
+
+      // Compressed textures cannot have RENDER_ATTACHMENT usage.
+      srcTex?.destroy?.();
+      srcTex = device.createTexture({
+        size: { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 },
+        format: wgpuFormat,
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
       });
-      
-      // Upload mip levels
-      let mipWidth = header.pixelWidth;
-      let mipHeight = header.pixelHeight;
+      srcView = srcTex.createView();
 
-      for (let i = 0; i < levels.length; i++) {
-        const level = levels[i];
-        const data = new Uint8Array(arrayBuffer, level.byteOffset, level.byteLength);
+      // Repack each *block row* to 256B alignment if needed.
+      const { data, bytesPerRow, rowsPerImage } =
+        padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, 4, 4);
 
-        const bytesPerBlock = bytesPerBlockForFormat(format);
-        const blockWidth = 4; // usually 4×4 block compression alignment
-        const bytesPerRow = Math.ceil(mipWidth / blockWidth) * bytesPerBlock;
+      // Upload compressed blocks straight into the texture.
+      device.queue.writeTexture(
+        { texture: srcTex },
+        data,
+        { bytesPerRow, rowsPerImage },
+        { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 }
+      );
 
-        device.queue.writeTexture(
-          { texture, mipLevel: i },
-          data,
-          {
-            offset: 0,
-            bytesPerRow,
-            rowsPerImage: mipHeight
-          },
-          {
-            width: mipWidth,
-            height: mipHeight,
-            depthOrArrayLayers: 1
-          }
-        );
-
-        mipWidth = Math.max(1, Math.floor(mipWidth / 2));
-        mipHeight = Math.max(1, Math.floor(mipHeight / 2));
-      }
-
-      // Create texture view
-      const textureView = texture.createView();
-
-      // Clean up previous texture if needed
-      srcTex?.destroy();
-      srcTex = texture;
-      srcView = textureView;
-
-      stat.textContent = `Loaded ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${header.levelCount} mip levels)`;
+      stat.textContent = `Loaded ${file.name} (KTX2 BC7, ${lvl.width}×${lvl.height}, ${wgpuFormat})`;
       if (texPipeline) texBindGroup = makeTexBindGroup();
     }
+
+    // Pick the right loader by file extension.
     fileInp.addEventListener('change', async () => {
       const f = fileInp.files?.[0];
       if (!f) return;
-
       try {
-        if (f.name.endsWith('.ktx') || f.name.endsWith('.ktx2')) {
-          await loadKTXImageToTexture(f);
+        if (f.name.toLowerCase().endsWith('.ktx2')) {
+          await loadKTX2_BC7_ToTexture(f);
         } else {
-          await loadJPGImageToTexture(f);
+          await loadImageToTexture(f);
         }
       } catch (e) {
         console.error(e);
-        log('Load failed: ' + e.message);
-      }    
+        log('Load failed: ' + e);
+      }
     });
 
-    // ---------------- Shaders ----------------
+    // ---------- Shaders ----------
+    // Draw a full-screen triangle sampled from our texture, with exposure + ACES tonemap.
     const texturedWGSL = /* wgsl */`
       struct Params {
         exposureEV: f32,
@@ -269,6 +310,7 @@ import { parseKTX2 } from './read.js';
       }
     `;
 
+    // Simple solid-color fallback if the textured pipeline fails.
     const solidWGSL = /* wgsl */`
       struct VSOut { @builtin(position) pos: vec4f }
       @vertex fn vs_main(@builtin(vertex_index) vid: u32) -> VSOut {
@@ -286,6 +328,7 @@ import { parseKTX2 } from './read.js';
       }
     `;
 
+    // Create modules & log diagnostics (super useful for WGSL).
     async function compileModule(code, label) {
       const mod = device.createShaderModule({ code, label });
       const info = await mod.getCompilationInfo();
@@ -304,6 +347,7 @@ import { parseKTX2 } from './read.js';
     const texturedVS = await compileModule(texturedWGSL, 'textured');
     const solidVS    = await compileModule(solidWGSL,    'solid');
 
+    // Render pipelines: textured (preferred) and solid (fallback).
     let texPipeline = null;
     let solidPipeline = null;
 
@@ -332,6 +376,7 @@ import { parseKTX2 } from './read.js';
       return;
     }
 
+    // Bind group for the textured path (U/Sampler/Texture)
     function makeTexBindGroup() {
       const bgl0 = texPipeline.getBindGroupLayout(0);
       return device.createBindGroup({
@@ -345,7 +390,7 @@ import { parseKTX2 } from './read.js';
     }
     let texBindGroup = texPipeline ? makeTexBindGroup() : null;
 
-    // ---------------- Frame loop ----------------
+    // ---------- Frame loop ----------
     function frame() {
       configureIfNeeded();
       const swap = context.getCurrentTexture();
@@ -355,7 +400,7 @@ import { parseKTX2 } from './read.js';
 
       const encoder = device.createCommandEncoder();
 
-      // Clear
+      // Clear pass
       {
         const pass = encoder.beginRenderPass({
           colorAttachments: [{
@@ -368,14 +413,10 @@ import { parseKTX2 } from './read.js';
         pass.end();
       }
 
-      // Draw
+      // Draw pass
       {
         const pass = encoder.beginRenderPass({
-          colorAttachments: [{
-            view: rtv,
-            loadOp: 'load',
-            storeOp: 'store'
-          }]
+          colorAttachments: [{ view: rtv, loadOp: 'load', storeOp: 'store' }]
         });
 
         if (texPipeline && texBindGroup) {
@@ -394,12 +435,14 @@ import { parseKTX2 } from './read.js';
     }
     frame();
 
-    // adapter info
+    // ----------- Nice-to-have adapter info -----------
     try {
       const info = await adapter.requestAdapterInfo?.();
       if (info) log(`WebGPU OK — ${info.vendor} ${info.architecture} ${info.description}`);
       else log('WebGPU OK');
-    } catch { log('WebGPU OK'); }
+    } catch {
+      log('WebGPU OK');
+    }
   } catch (e) {
     console.error(e);
     log(String(e));

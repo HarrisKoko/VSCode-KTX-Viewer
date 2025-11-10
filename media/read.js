@@ -1,68 +1,62 @@
 // File for parsing KTX2 files
 // | Identifier | Header | Level Index | DFD | KVD | SGD | Mip Level Array |
 
-// Identifier (12 bytes)
-// Header (17 × 4 bytes = 68 bytes)
-// Level Index (levelCount × 24 bytes)
-//// byeOffset, byteLength, uncompressedByteLength
-//// used to locate mip levels in the binary file
 async function parseKTX2(arrayBuffer) {
-  // Indentifier
   const dv = new DataView(arrayBuffer);
+
+  // Identifier (12 bytes)
   const identifier = new Uint8Array(arrayBuffer, 0, 12);
-  const KTX2_IDENTIFIER = new Uint8Array([
-    0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A
-  ]);
+  const KTX2_IDENTIFIER = new Uint8Array([0xAB,0x4B,0x54,0x58,0x20,0x32,0x30,0xBB,0x0D,0x0A,0x1A,0x0A]);
   for (let i = 0; i < 12; i++) {
-    if (identifier[i] !== KTX2_IDENTIFIER[i])
-      throw new Error('Invalid KTX2 identifier');
+    if (identifier[i] !== KTX2_IDENTIFIER[i]) throw new Error('Invalid KTX2 identifier');
   }
 
-  // Header
+  if (arrayBuffer.byteLength < 12 + 68) {
+    throw new Error('KTX2 too small to contain header.');
+  }
+
+  // Header (68 bytes)
   let offset = 12;
   const header = {
-    vkFormat: dv.getUint32(offset, true), offset: offset += 4,
-    typeSize: dv.getUint32(offset, true), offset: offset += 4,
-    pixelWidth: dv.getUint32(offset, true), offset: offset += 4,
-    pixelHeight: dv.getUint32(offset, true), offset: offset += 4,
-    pixelDepth: dv.getUint32(offset, true), offset: offset += 4,
-    layerCount: dv.getUint32(offset, true), offset: offset += 4,
-    faceCount: dv.getUint32(offset, true), offset: offset += 4,
-    levelCount: dv.getUint32(offset, true), offset: offset += 4,
-    supercompressionScheme: dv.getUint32(offset, true), offset: offset += 4,
+    vkFormat: dv.getUint32(offset, true), offset: (offset += 4),
+    typeSize: dv.getUint32(offset, true), offset: (offset += 4),
+    pixelWidth: dv.getUint32(offset, true), offset: (offset += 4),
+    pixelHeight: dv.getUint32(offset, true), offset: (offset += 4),
+    pixelDepth: dv.getUint32(offset, true), offset: (offset += 4),
+    layerCount: dv.getUint32(offset, true), offset: (offset += 4),
+    faceCount: dv.getUint32(offset, true), offset: (offset += 4),
+    levelCount: dv.getUint32(offset, true), offset: (offset += 4),
+    supercompressionScheme: dv.getUint32(offset, true), offset: (offset += 4),
   };
 
   // Index
   const index = {
-    dfdByteOffset: dv.getUint32(offset, true), offset: offset += 4,
-    dfdByteLength: dv.getUint32(offset, true), offset: offset += 4,
-    kvdByteOffset: dv.getUint32(offset, true), offset: offset += 4,
-    kvdByteLength: dv.getUint32(offset, true), offset: offset += 4,
-    sgdByteOffset: Number(dv.getBigUint64(offset, true)), offset: offset += 8,
-    sgdByteLength: Number(dv.getBigUint64(offset, true)), offset: offset += 8,
+    dfdByteOffset: dv.getUint32(offset, true), offset: (offset += 4),
+    dfdByteLength: dv.getUint32(offset, true), offset: (offset += 4),
+    kvdByteOffset: dv.getUint32(offset, true), offset: (offset += 4),
+    kvdByteLength: dv.getUint32(offset, true), offset: (offset += 4),
+    sgdByteOffset: Number(dv.getBigUint64(offset, true)), offset: (offset += 8),
+    sgdByteLength: Number(dv.getBigUint64(offset, true)), offset: (offset += 8),
   };
 
   // Level Index
+  const levelCount = Math.max(1, header.levelCount || 1);
   const levels = [];
-  for (let i = 0; i < Math.max(1, header.levelCount); i++) {
+  for (let i = 0; i < levelCount; i++) {
     const byteOffset = Number(dv.getBigUint64(offset, true)); offset += 8;
     const byteLength = Number(dv.getBigUint64(offset, true)); offset += 8;
     const uncompressedByteLength = Number(dv.getBigUint64(offset, true)); offset += 8;
-    // TODO: make this into a class
-    levels.push({ 
-      byteOffset, 
-      byteLength, 
-      uncompressedByteLength,
-      width: Math.max(1, header.pixelWidth >> i),
-      height: Math.max(1, header.pixelHeight >> i)
+    levels.push({
+      byteOffset, byteLength, uncompressedByteLength,
+      width: Math.max(1, header.pixelWidth  >> i),
+      height: Math.max(1, header.pixelHeight >> i),
     });
   }
 
   return { header, index, levels };
 }
 
-// Data Format Descriptor
-// call const dfd = parseDFD(dv, index.dfdByteOffset, index.dfdByteLength);
+// DFD
 function parseDFD(dv, baseOffset, length) {
   const view = new DataView(dv.buffer, baseOffset, length);
   let offset = 0;
@@ -78,50 +72,40 @@ function parseDFD(dv, baseOffset, length) {
   const flags = view.getUint8(offset++);
 
   const texelBlockDimension = [
-    view.getUint8(offset++),
-    view.getUint8(offset++),
-    view.getUint8(offset++),
-    view.getUint8(offset++)
+    view.getUint8(offset++), view.getUint8(offset++),
+    view.getUint8(offset++), view.getUint8(offset++)
   ];
 
   const bytesPlane = [];
   for (let i = 0; i < 8; i++) bytesPlane.push(view.getUint8(offset++));
 
-  return {
-    vendorId, descriptorType, versionNumber,
-    colorModel, colorPrimaries, transferFunction, flags,
-    texelBlockDimension, bytesPlane
-  };
+  return { totalSize, vendorId, descriptorType, versionNumber,
+           colorModel, colorPrimaries, transferFunction, flags,
+           texelBlockDimension, bytesPlane };
 }
 
-// Key/Value Data
+// KVD
 function parseKVD(dv, baseOffset, length) {
   const kv = {};
   let offset = baseOffset;
   while (offset < baseOffset + length) {
     const kvByteLength = dv.getUint32(offset, true); offset += 4;
-    const keyBytes = new Uint8Array(dv.buffer, offset, kvByteLength);
-    const keyStr = new TextDecoder().decode(keyBytes);
-    const nullPos = keyStr.indexOf('\0');
-    const key = keyStr.slice(0, nullPos);
-    const value = keyStr.slice(nullPos + 1);
+    const bytes = new Uint8Array(dv.buffer, offset, kvByteLength);
+    const str = new TextDecoder().decode(bytes);
+    const nullPos = str.indexOf('\0');
+    const key = str.slice(0, nullPos);
+    const value = str.slice(nullPos + 1);
     kv[key] = value;
     offset += kvByteLength;
-    const padding = (4 - (kvByteLength % 4)) % 4;
-    offset += padding;
+    offset += (4 - (kvByteLength % 4)) % 4; // 4-byte align
   }
   return kv;
 }
 
-// Mip Level Array
-// for each mip_level in levelCount
-// const mipLevels = levels.map(level => 
-//  getLevelData(arrayBuffer, level)
-// );
+// Mip level accessor
 function getLevelData(arrayBuffer, level) {
   return new Uint8Array(arrayBuffer, level.byteOffset, level.byteLength);
 }
 
-// num_blocks_z = max (1, ceil(floor(pixelDepth * 2^(-p))/block_depth))
-// num_blocks_y = max (1, ceil(floor(pixelHeight * 2^(-p))/block_height))
-// num_blocks_x = max (1, ceil(floor(pixelWidth * 2^(-p))/block_width))
+// expose the main parse function for main.js
+window.parseKTX2 = parseKTX2;
