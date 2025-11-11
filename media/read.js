@@ -4,7 +4,7 @@
 async function parseKTX2(arrayBuffer) {
   const dv = new DataView(arrayBuffer);
 
-  // Identifier (12 bytes) - confirms that this is a valid ktx2 file
+  // Identifier (12 bytes)
   const identifier = new Uint8Array(arrayBuffer, 0, 12);
   const KTX2_IDENTIFIER = new Uint8Array([0xAB,0x4B,0x54,0x58,0x20,0x32,0x30,0xBB,0x0D,0x0A,0x1A,0x0A]);
   for (let i = 0; i < 12; i++) {
@@ -16,32 +16,30 @@ async function parseKTX2(arrayBuffer) {
   }
 
   // Header (68 bytes) - Describes global properties of the texture (dimensions, format, data locations, etc.)
-  let offset = 12; // Start after identifier (12 bytes)
+  let offset = 12; // After identifier which is 12 bytes)
   const header = {
-    vkFormat: dv.getUint32(offset, true), offset: (offset += 4), // Vulkan format enum 
-    typeSize: dv.getUint32(offset, true), offset: (offset += 4), // Size of data type 
-    pixelWidth: dv.getUint32(offset, true), offset: (offset += 4), // Image width
-    pixelHeight: dv.getUint32(offset, true), offset: (offset += 4), // Image height
-    pixelDepth: dv.getUint32(offset, true), offset: (offset += 4), // Image depth
-    layerCount: dv.getUint32(offset, true), offset: (offset += 4), // Number of array layers 
-    pixelDepth: dv.getUint32(offset, true), offset: (offset += 4), // Image depth
-    layerCount: dv.getUint32(offset, true), offset: (offset += 4), // Number of array layers
-    faceCount: dv.getUint32(offset, true), offset: (offset += 4), // Number of faces (6 for cubemaps) 
+    vkFormat: dv.getUint32(offset, true), offset: (offset += 4), // Vulkan format enum
+    typeSize: dv.getUint32(offset, true), offset: (offset += 4), // Size of a single texel block in bytes
+    pixelWidth: dv.getUint32(offset, true), offset: (offset += 4), // Width of the texture in pixels
+    pixelHeight: dv.getUint32(offset, true), offset: (offset += 4), // Height of the texture in pixels
+    pixelDepth: dv.getUint32(offset, true), offset: (offset += 4), // Depth of the texture in pixels (1 for 2D textures)
+    layerCount: dv.getUint32(offset, true), offset: (offset += 4), /// Number of array layers
+    faceCount: dv.getUint32(offset, true), offset: (offset += 4), // Number of faces (6 for cubemaps)
     levelCount: dv.getUint32(offset, true), offset: (offset += 4), // Number of mip levels
-    supercompressionScheme: dv.getUint32(offset, true), offset: (offset += 4), // Supercompression scheme
+    supercompressionScheme: dv.getUint32(offset, true), offset: (offset += 4), // Supercompression scheme used (0 = none)
   };
 
-  // Index 
+  // Index
   const index = {
-    dfdByteOffset: dv.getUint32(offset, true), offset: (offset += 4), // Data Format Descriptor byte offset
-    dfdByteLength: dv.getUint32(offset, true), offset: (offset += 4), // Data Format Descriptor byte length
-    kvdByteOffset: dv.getUint32(offset, true), offset: (offset += 4), // Key/Value Data byte offset
-    kvdByteLength: dv.getUint32(offset, true), offset: (offset += 4), // Key/Value Data byte length
-    sgdByteOffset: Number(dv.getBigUint64(offset, true)), offset: (offset += 8), // Supercompression Global Data byte offset
-    sgdByteLength: Number(dv.getBigUint64(offset, true)), offset: (offset += 8), // Supercompression Global Data byte length
+    dfdByteOffset: dv.getUint32(offset, true), offset: (offset += 4), // Data Format Descriptor
+    dfdByteLength: dv.getUint32(offset, true), offset: (offset += 4), // Length of DFD block
+    kvdByteOffset: dv.getUint32(offset, true), offset: (offset += 4), // Key/Value Data
+    kvdByteLength: dv.getUint32(offset, true), offset: (offset += 4), // Length of KVD block
+    sgdByteOffset: Number(dv.getBigUint64(offset, true)), offset: (offset += 8), // Supercompression Global Data
+    sgdByteLength: Number(dv.getBigUint64(offset, true)), offset: (offset += 8), // Length of SGD block
   };
 
-  // Level Index - Lists where each mipmap level’s data is stored in the file (each is 24 bytes)
+  // Level Index - array of mip levels
   const levelCount = Math.max(1, header.levelCount || 1);
   const levels = [];
   for (let i = 0; i < levelCount; i++) {
@@ -70,7 +68,7 @@ async function parseKTX2(arrayBuffer) {
   return { header, index, levels, dfd, kvd };
 }
 
-// DFD - Describes how to interpret pixel data at the bit level.
+// DFD
 function parseDFD(dv, baseOffset, length) {
   const view = new DataView(dv.buffer, baseOffset, length);
   let offset = 0;
@@ -98,7 +96,7 @@ function parseDFD(dv, baseOffset, length) {
            texelBlockDimension, bytesPlane, descriptorBlockSize };
 }
 
-// KVD - Optional metadata, stored as UTF-8 key/value pairs.
+// KVD
 function parseKVD(dv, baseOffset, length) {
   const kv = {};
   let offset = baseOffset;
