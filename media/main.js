@@ -223,7 +223,7 @@
       else if (header.vkFormat === VK_FORMAT_BC7_SRGB_BLOCK) wgpuFormat = 'bc7-rgba-unorm-srgb';
       else throw new Error(`Unsupported vkFormat ${header.vkFormat}; need BC7.`);
 
-      // Top mip only for now (you can loop over levels to upload all mips later)
+      // Top mip only for now (you can loop over levels to upload a ll mips later)
       const lvl = levels[0];
       const bytesPerBlock = 16; // BC7 block = 16 bytes
       const raw = new Uint8Array(buf, lvl.byteOffset, lvl.byteLength);
@@ -293,7 +293,7 @@
         let p = pos[vid];
         var o: VSOut;
         o.pos = vec4f(p, 0.0, 1.0);
-        o.uv  = 0.5 * (p + vec2f(1.0, 1.0));
+        o.uv = vec2f(0.5 * (p.x + 1.0), 0.5 * (1.0 - p.y));
         return o;
       }
 
