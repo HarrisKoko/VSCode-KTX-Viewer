@@ -140,7 +140,11 @@
     }
 
     // ---------- Texture state ----------
-    const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+    const sampler = device.createSampler({
+      magFilter: 'linear',
+      minFilter: 'linear',
+      mipmapFilter: 'linear',
+    });
 
     // Bootstrap a tiny 2x2 RGBA8 checker
     function checkerRGBA8() {
@@ -216,33 +220,45 @@
       const { format: wgpuFormat, blockWidth, blockHeight, bytesPerBlock } = formatInfo;
       const formatName = window.getFormatName(header.vkFormat);
 
-      // Upload first mip level
-      const lvl = levels[0];
-      const raw = new Uint8Array(buf, lvl.byteOffset, lvl.byteLength);
-
       // Create texture (compressed textures cannot have RENDER_ATTACHMENT)
       srcTex?.destroy?.();
       srcTex = device.createTexture({
-        size: { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 },
+        size: {
+          width: header.pixelWidth,
+          height: header.pixelHeight,
+          depthOrArrayLayers: 1,
+        },
+        mipLevelCount: header.levelCount,
         format: wgpuFormat,
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
       });
       srcView = srcTex.createView();
 
-      // Pad block rows to 256B alignment
-      const { data, bytesPerRow, rowsPerImage } =
-        padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, blockWidth, blockHeight);
+      // Upload all mip levels
+      for (let i = 0; i < levels.length; i++) {
+        const lvl = levels[i];
+        const raw = new Uint8Array(buf, lvl.byteOffset, lvl.byteLength);
+        const { data, bytesPerRow, rowsPerImage } = padBlockRowsBC(
+          raw,
+          lvl.width,
+          lvl.height,
+          bytesPerBlock,
+          blockWidth,
+          blockHeight
+        );
 
-      // Upload compressed data
-      device.queue.writeTexture(
-        { texture: srcTex },
-        data,
-        { bytesPerRow, rowsPerImage },
-        { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 }
-      );
+        device.queue.writeTexture(
+          { texture: srcTex },//, mipLevel: i },
+          data,
+          { bytesPerRow, rowsPerImage },
+          { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 }
+        );
+      }
 
-      stat.textContent = `Loaded ${file.name} (${lvl.width}×${lvl.height})`;
-      
+      const base = levels[0];
+      stat.textContent = `Loaded ${file.name} (${base.width}×${base.height}, ${levels.length} mips)`;
+
+
       // Show metadata
       let metaStr = `Format: ${formatName} (${wgpuFormat})`;
       if (kvd && Object.keys(kvd).length > 0) {
