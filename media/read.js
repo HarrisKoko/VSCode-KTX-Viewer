@@ -4,7 +4,7 @@
 async function parseKTX2(arrayBuffer) {
   const dv = new DataView(arrayBuffer);
 
-  // Identifier (12 bytes)
+  // Identifier (12 bytes) - validates that this is truly ktx2 file
   const identifier = new Uint8Array(arrayBuffer, 0, 12);
   const KTX2_IDENTIFIER = new Uint8Array([0xAB,0x4B,0x54,0x58,0x20,0x32,0x30,0xBB,0x0D,0x0A,0x1A,0x0A]);
   for (let i = 0; i < 12; i++) {
@@ -16,9 +16,9 @@ async function parseKTX2(arrayBuffer) {
   }
 
   // Header (68 bytes) - Describes global properties of the texture (dimensions, format, data locations, etc.)
-  let offset = 12; // After identifier which is 12 bytes)
+  let offset = 12; // After identifier which is 12 bytes
   const header = {
-    vkFormat: dv.getUint32(offset, true), offset: (offset += 4), // Vulkan format enum
+    vkFormat: dv.getUint32(offset, true), offset: (offset += 4), // Vulkan format enum (texture type)
     typeSize: dv.getUint32(offset, true), offset: (offset += 4), // Size of a single texel block in bytes
     pixelWidth: dv.getUint32(offset, true), offset: (offset += 4), // Width of the texture in pixels
     pixelHeight: dv.getUint32(offset, true), offset: (offset += 4), // Height of the texture in pixels
@@ -29,7 +29,7 @@ async function parseKTX2(arrayBuffer) {
     supercompressionScheme: dv.getUint32(offset, true), offset: (offset += 4), // Supercompression scheme used (0 = none)
   };
 
-  // Index
+  // Indexing of data blocks
   const index = {
     dfdByteOffset: dv.getUint32(offset, true), offset: (offset += 4), // Data Format Descriptor
     dfdByteLength: dv.getUint32(offset, true), offset: (offset += 4), // Length of DFD block
@@ -68,7 +68,7 @@ async function parseKTX2(arrayBuffer) {
   return { header, index, levels, dfd, kvd };
 }
 
-// DFD
+// DFD data block parser
 function parseDFD(dv, baseOffset, length) {
   const view = new DataView(dv.buffer, baseOffset, length);
   let offset = 0;
@@ -96,7 +96,7 @@ function parseDFD(dv, baseOffset, length) {
            texelBlockDimension, bytesPlane, descriptorBlockSize };
 }
 
-// KVD
+// KVD data block parser
 function parseKVD(dv, baseOffset, length) {
   const kv = {};
   let offset = baseOffset;
