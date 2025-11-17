@@ -1,4 +1,5 @@
 // main.js — JPG/PNG/WebP renderer + KTX2 (BC1-BC7) loader using WebGPU
+// WITH PROPER MIPMAP SUPPORT AND BLOCK ALIGNMENT
 
 (async function () {
   // Minimal logger to the on-screen <div id="log">
@@ -24,7 +25,9 @@
   }
 
   // For COMPRESSED uploads (BC formats), alignment applies to *block rows* not pixel rows.
+  // FIXED: Handle small mip levels correctly by treating them as at least 1 block
   function padBlockRowsBC(src, width, height, bytesPerBlock, blockWidth = 4, blockHeight = 4) {
+    // For compressed formats, even a 1x1 pixel mip is treated as a full 4x4 block
     const wBlocks = Math.max(1, Math.ceil(width  / blockWidth));
     const hBlocks = Math.max(1, Math.ceil(height / blockHeight));
     const rowBytes = wBlocks * bytesPerBlock;
@@ -140,7 +143,12 @@
     }
 
     // ---------- Texture state ----------
-    const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+    // FIXED: Added mipmapFilter for proper mipmap sampling
+    const sampler = device.createSampler({ 
+      magFilter: 'linear', 
+      minFilter: 'linear',
+      mipmapFilter: 'linear'  // Enable trilinear filtering
+    });
 
     // Bootstrap a tiny 2x2 RGBA8 checker
     function checkerRGBA8() {
@@ -195,6 +203,7 @@
     }
 
     // KTX2 (BC1-BC7) — upload compressed blocks directly
+    // FIXED: Now uploads ALL mip levels with proper block alignment
     async function loadKTX2_ToTexture(file) {
       if (!bcSupported) throw new Error('BC compressed textures not supported on this device.');
       await waitForKTXParser();
@@ -216,32 +225,45 @@
       const { format: wgpuFormat, blockWidth, blockHeight, bytesPerBlock } = formatInfo;
       const formatName = window.getFormatName(header.vkFormat);
 
-      // Upload first mip level
-      const lvl = levels[0];
-      const raw = new Uint8Array(buf, lvl.byteOffset, lvl.byteLength);
-
-      // Create texture (compressed textures cannot have RENDER_ATTACHMENT)
+      // FIXED: Create texture with proper mipLevelCount
       srcTex?.destroy?.();
       srcTex = device.createTexture({
-        size: { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 },
+        size: { width: header.pixelWidth, height: header.pixelHeight, depthOrArrayLayers: 1 },
         format: wgpuFormat,
+        mipLevelCount: levels.length,  // CRITICAL: Specify number of mip levels
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
       });
       srcView = srcTex.createView();
 
-      // Pad block rows to 256B alignment
-      const { data, bytesPerRow, rowsPerImage } =
-        padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, blockWidth, blockHeight);
+      // FIXED: Upload ALL mip levels with proper block alignment
+      for (let i = 0; i < levels.length; i++) {
+        const lvl = levels[i];
+        const raw = new Uint8Array(buf, lvl.byteOffset, lvl.byteLength);
 
-      // Upload compressed data
-      device.queue.writeTexture(
-        { texture: srcTex },
-        data,
-        { bytesPerRow, rowsPerImage },
-        { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 }
-      );
+        // Pad block rows to 256B alignment
+        const { data, bytesPerRow, rowsPerImage } =
+          padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, blockWidth, blockHeight);
 
-      stat.textContent = `Loaded ${file.name} (${lvl.width}×${lvl.height})`;
+        // CRITICAL: For compressed formats, extent must be multiples of block size
+        // Round UP to nearest block multiple (5x5 becomes 8x8, 1x1 becomes 4x4, etc)
+        const uploadWidth = Math.ceil(lvl.width / blockWidth) * blockWidth;
+        const uploadHeight = Math.ceil(lvl.height / blockHeight) * blockHeight;
+
+        // Upload compressed data to specific mip level
+        device.queue.writeTexture(
+          { 
+            texture: srcTex,
+            mipLevel: i
+          },
+          data,
+          { bytesPerRow, rowsPerImage },
+          { width: uploadWidth, height: uploadHeight, depthOrArrayLayers: 1 }
+        );
+      }
+
+      // FIXED: Show mip level count in status
+      const lvl0 = levels[0];
+      stat.textContent = `Loaded ${file.name} (${lvl0.width}×${lvl0.height}, ${levels.length} mip${levels.length > 1 ? 's' : ''})`;
       
       // Show metadata
       let metaStr = `Format: ${formatName} (${wgpuFormat})`;
