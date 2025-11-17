@@ -5,7 +5,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('ktx2hdr.openWebgpuDemo', () => {
       const panel = vscode.window.createWebviewPanel(
         'webgpuDemo',
-        'WebGPU Demo',
+        'WebGPU KTX2 Viewer',
         vscode.ViewColumn.Beside,
         {
           enableScripts: true,
@@ -19,7 +19,9 @@ export function activate(context: vscode.ExtensionContext) {
       const scriptUri = panel.webview.asWebviewUri(
         vscode.Uri.joinPath(context.extensionUri, 'media', 'main.js')
       );
-
+      const shaderUri = panel.webview.asWebviewUri(
+        vscode.Uri.joinPath(context.extensionUri, 'media', 'shaders.wgsl')
+      );
 
       const nonce = getNonce();
       panel.webview.html = /* html */`
@@ -29,10 +31,10 @@ export function activate(context: vscode.ExtensionContext) {
           <meta charset="UTF-8" />
           <meta
             http-equiv="Content-Security-Policy"
-            content="default-src 'none'; style-src 'unsafe-inline' ${panel.webview.cspSource}; img-src ${panel.webview.cspSource}; script-src 'nonce-${nonce}';"
+            content="default-src 'none'; style-src 'unsafe-inline' ${panel.webview.cspSource}; img-src ${panel.webview.cspSource}; script-src 'nonce-${nonce}'; connect-src ${panel.webview.cspSource};"
           />
           <meta name="viewport" content="width=device-width,initial-scale=1" />
-          <title>WebGPU Triangle</title>
+          <title>WebGPU KTX2 Viewer</title>
           <style>
             html, body, #wrap { height: 100%; margin: 0; background: #1e1e1e; }
             #log { position:absolute; top:8px; left:8px; font:12px/1.4 monospace; color:#ccc; }
@@ -44,9 +46,12 @@ export function activate(context: vscode.ExtensionContext) {
             <canvas id="gfx"></canvas>
             <div id="log">Initializing…</div>
           </div>
-          <!-- Load the new parser first (exposes globals), then your existing main -->
+          <script nonce="${nonce}">
+            // Inject shader URI as global variable
+            window.shaderUri = '${shaderUri}';
+          </script>
           <script nonce="${nonce}" src="${readUri}"></script>
-          <script nonce="${nonce}" src="${scriptUri}"></script>
+          <script nonce="${nonce}" type="module" src="${scriptUri}"></script>
         </body>
         </html>`;
 
