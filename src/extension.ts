@@ -13,9 +13,13 @@ export function activate(context: vscode.ExtensionContext) {
         }
       );
 
+      const readUri = panel.webview.asWebviewUri(
+        vscode.Uri.joinPath(context.extensionUri, 'media', 'read.js')
+      );
       const scriptUri = panel.webview.asWebviewUri(
         vscode.Uri.joinPath(context.extensionUri, 'media', 'main.js')
       );
+
 
       const nonce = getNonce();
       panel.webview.html = /* html */`
@@ -40,9 +44,12 @@ export function activate(context: vscode.ExtensionContext) {
             <canvas id="gfx"></canvas>
             <div id="log">Initializing…</div>
           </div>
+          <!-- Load the new parser first (exposes globals), then your existing main -->
+          <script nonce="${nonce}" src="${readUri}"></script>
           <script nonce="${nonce}" src="${scriptUri}"></script>
         </body>
         </html>`;
+
     })
   );
 }

@@ -1,17 +1,72 @@
+// main.js — JPG/PNG/WebP renderer + KTX2 (BC1-BC7) loader using WebGPU
+
 (async function () {
-  const log = (msg) => { const el = document.getElementById('log'); if (el) el.textContent = String(msg); };
+  // Minimal logger to the on-screen <div id="log">
+  const log = (msg) => {
+    const el = document.getElementById('log');
+    if (el) el.textContent = String(msg);
+  };
+
+  // ---------- Upload helpers ----------
+
+  // For UNCOMPRESSED uploads (e.g., RGBA8), WebGPU requires bytesPerRow to be 256-byte aligned.
+  function padRows(src, width, height, bytesPerPixel = 4) {
+    const rowStride = width * bytesPerPixel;
+    const aligned = Math.ceil(rowStride / 256) * 256;
+    if (aligned === rowStride) return { data: src, bytesPerRow: rowStride };
+
+    const dst = new Uint8Array(aligned * height);
+    for (let y = 0; y < height; y++) {
+      const s0 = y * rowStride, d0 = y * aligned;
+      dst.set(src.subarray(s0, s0 + rowStride), d0);
+    }
+    return { data: dst, bytesPerRow: aligned };
+  }
+
+  // For COMPRESSED uploads (BC formats), alignment applies to *block rows* not pixel rows.
+  function padBlockRowsBC(src, width, height, bytesPerBlock, blockWidth = 4, blockHeight = 4) {
+    const wBlocks = Math.max(1, Math.ceil(width  / blockWidth));
+    const hBlocks = Math.max(1, Math.ceil(height / blockHeight));
+    const rowBytes = wBlocks * bytesPerBlock;
+
+    const aligned = Math.ceil(rowBytes / 256) * 256;
+    if (aligned === rowBytes) {
+      return { data: src, bytesPerRow: rowBytes, rowsPerImage: hBlocks };
+    }
+
+    const dst = new Uint8Array(aligned * hBlocks);
+    for (let y = 0; y < hBlocks; y++) {
+      const s0 = y * rowBytes, d0 = y * aligned;
+      dst.set(src.subarray(s0, s0 + rowBytes), d0);
+    }
+    return { data: dst, bytesPerRow: aligned, rowsPerImage: hBlocks };
+  }
+
+  // Wait until read.js is loaded
+  async function waitForKTXParser() {
+    let tries = 0;
+    while (typeof window.parseKTX2 !== 'function') {
+      if (tries++ > 500) throw new Error('KTX2 parser not loaded');
+      await new Promise(r => setTimeout(r, 10));
+    }
+  }
 
   try {
+    // ---------- WebGPU availability ----------
     if (!('gpu' in navigator)) { log('WebGPU not available.'); return; }
 
     const canvas  = document.getElementById('gfx');
     const context = canvas.getContext('webgpu');
     if (!context) { log('Failed to get WebGPU context.'); return; }
 
-    // ---------------- Adapter / Device ----------------
+    // ---------- Adapter / Device ----------
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) { log('No GPU adapter.'); return; }
-    const device = await adapter.requestDevice();
+
+    const bcSupported = adapter.features.has('texture-compression-bc');
+    const device = await adapter.requestDevice({
+      requiredFeatures: bcSupported ? ['texture-compression-bc'] : []
+    });
 
     device.addEventListener?.('uncapturederror', (e) => {
       console.error('WebGPU uncaptured error:', e.error || e);
@@ -20,7 +75,7 @@
 
     const format = navigator.gpu.getPreferredCanvasFormat();
 
-    // ---------------- UI ----------------
+    // ---------- Simple UI ----------
     const ui = document.createElement('div');
     ui.style.position = 'absolute';
     ui.style.right = '12px';
@@ -37,23 +92,30 @@
         <span id="evv">0</span>
       </div>
       <div>
-        <input id="file" type="file" accept="image/png, image/jpeg, image/webp">
+        <input id="file" type="file" accept="image/png, image/jpeg, image/webp, .ktx2">
       </div>
       <div id="stat" style="margin-top:6px; opacity:.9;"></div>
+      <div id="meta" style="margin-top:6px; opacity:.7; font-size:10px;"></div>
+      <div style="margin-top:6px; opacity:.9;">BC Compression: ${bcSupported ? '✓ available' : '✗ not supported'}</div>
     `;
     document.body.appendChild(ui);
+
     const evInput = document.getElementById('ev');
     const evVal   = document.getElementById('evv');
     const fileInp = document.getElementById('file');
     const stat    = document.getElementById('stat');
+    const meta    = document.getElementById('meta');
 
     let exposureEV = 0;
-    evInput.oninput = () => { exposureEV = parseFloat(evInput.value); evVal.textContent = evInput.value; };
+    evInput.oninput = () => {
+      exposureEV = parseFloat(evInput.value);
+      evVal.textContent = evInput.value;
+    };
 
-    // ---------------- Canvas sizing & configure ----------------
+    // ---------- Swapchain configure ----------
     let lastW = 0, lastH = 0;
     function configureIfNeeded() {
-      const dpr = 1; // keep stable in Electron
+      const dpr = 1;
       const w = Math.max(1, Math.floor(canvas.clientWidth  * dpr));
       const h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
       if (w !== lastW || h !== lastH) {
@@ -66,25 +128,28 @@
     new ResizeObserver(configureIfNeeded).observe(canvas);
     configureIfNeeded();
 
-    // ---------------- Uniforms (pad to 256B) ----------------
+    // ---------- Uniforms ----------
     const uniformBuf = device.createBuffer({
       size: 256,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
     function updateUniforms() {
-      const arr = new Float32Array([exposureEV, Math.pow(2, exposureEV), lastW, lastH]);
+      const mul = Math.pow(2, exposureEV);
+      const arr = new Float32Array([exposureEV, mul, lastW, lastH]);
       device.queue.writeBuffer(uniformBuf, 0, arr.buffer);
     }
 
-    // ---------------- Texture + Sampler ----------------
+    // ---------- Texture state ----------
     const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
+    // Bootstrap a tiny 2x2 RGBA8 checker
     function checkerRGBA8() {
       return new Uint8Array([
         255,255,255,255,   32,32,32,255,
          32,32,32,255,   255,255,255,255
       ]);
     }
+
     let srcTex = device.createTexture({
       size: { width: 2, height: 2, depthOrArrayLayers: 1 },
       format: 'rgba8unorm',
@@ -92,16 +157,20 @@
            | GPUTextureUsage.COPY_DST
            | GPUTextureUsage.RENDER_ATTACHMENT
     });
-    device.queue.writeTexture(
-      { texture: srcTex },
-      checkerRGBA8(),
-      { bytesPerRow: 2*4 },
-      { width: 2, height: 2 }
-    );
+    {
+      const w = 2, h = 2;
+      const raw = checkerRGBA8();
+      const { data, bytesPerRow } = padRows(raw, w, h);
+      device.queue.writeTexture({ texture: srcTex }, data, { bytesPerRow }, { width: w, height: h });
+    }
     let srcView = srcTex.createView();
 
+    // ---------- Loaders ----------
+
+    // Uncompressed images (JPEG/PNG/WebP)
     async function loadImageToTexture(file) {
       const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+
       srcTex.destroy();
       srcTex = device.createTexture({
         size: { width: bmp.width, height: bmp.height, depthOrArrayLayers: 1 },
@@ -110,22 +179,102 @@
              | GPUTextureUsage.COPY_DST
              | GPUTextureUsage.RENDER_ATTACHMENT
       });
+
       device.queue.copyExternalImageToTexture(
         { source: bmp },
         { texture: srcTex },
         { width: bmp.width, height: bmp.height }
       );
+
       srcView = srcTex.createView();
       bmp.close?.();
-      stat.textContent = `Loaded ${file.name} (${srcTex.width || bmp.width}×${srcTex.height || bmp.height})`;
+
+      stat.textContent = `Loaded ${file.name} (${bmp.width}×${bmp.height})`;
+      meta.textContent = '';
       if (texPipeline) texBindGroup = makeTexBindGroup();
     }
+
+    // KTX2 (BC1-BC7) — upload compressed blocks directly
+    async function loadKTX2_ToTexture(file) {
+      if (!bcSupported) throw new Error('BC compressed textures not supported on this device.');
+      await waitForKTXParser();
+
+      const buf = await file.arrayBuffer();
+      const { header, levels, dfd, kvd } = await window.parseKTX2(buf);
+
+      // Validation
+      const is2D = header.pixelDepth === 0 && header.faceCount === 1;
+      if (!is2D) throw new Error('Only 2D, 1-face KTX2 supported in this demo.');
+      if (header.supercompressionScheme !== 0) throw new Error('Supercompressed KTX2 not supported.');
+
+      // Use helper to get WebGPU format info
+      const formatInfo = window.vkFormatToWebGPU(header.vkFormat);
+      if (!formatInfo) {
+        throw new Error(`Unsupported vkFormat ${header.vkFormat}. Supported: BC1-BC7.`);
+      }
+
+      const { format: wgpuFormat, blockWidth, blockHeight, bytesPerBlock } = formatInfo;
+      const formatName = window.getFormatName(header.vkFormat);
+
+      // Upload first mip level
+      const lvl = levels[0];
+      const raw = new Uint8Array(buf, lvl.byteOffset, lvl.byteLength);
+
+      // Create texture (compressed textures cannot have RENDER_ATTACHMENT)
+      srcTex?.destroy?.();
+      srcTex = device.createTexture({
+        size: { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 },
+        format: wgpuFormat,
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+      });
+      srcView = srcTex.createView();
+
+      // Pad block rows to 256B alignment
+      const { data, bytesPerRow, rowsPerImage } =
+        padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, blockWidth, blockHeight);
+
+      // Upload compressed data
+      device.queue.writeTexture(
+        { texture: srcTex },
+        data,
+        { bytesPerRow, rowsPerImage },
+        { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 }
+      );
+
+      stat.textContent = `Loaded ${file.name} (${lvl.width}×${lvl.height})`;
+      
+      // Show metadata
+      let metaStr = `Format: ${formatName} (${wgpuFormat})`;
+      if (kvd && Object.keys(kvd).length > 0) {
+        metaStr += `\nKVD: ${Object.keys(kvd).join(', ')}`;
+        if (kvd.KTXorientation) metaStr += `\nOrientation: ${kvd.KTXorientation}`;
+      }
+      if (dfd) {
+        metaStr += `\nDFD: colorModel=${dfd.colorModel}, transfer=${dfd.transferFunction}`;
+      }
+      meta.textContent = metaStr;
+
+      if (texPipeline) texBindGroup = makeTexBindGroup();
+    }
+
+    // Pick the right loader
     fileInp.addEventListener('change', async () => {
       const f = fileInp.files?.[0];
-      if (f) { try { await loadImageToTexture(f); } catch (e) { console.error(e); log('Load failed: ' + e); } }
+      if (!f) return;
+      try {
+        if (f.name.toLowerCase().endsWith('.ktx2')) {
+          await loadKTX2_ToTexture(f);
+        } else {
+          await loadImageToTexture(f);
+        }
+      } catch (e) {
+        console.error(e);
+        log('Load failed: ' + e.message);
+        stat.textContent = 'Error: ' + e.message;
+      }
     });
 
-    // ---------------- Shaders ----------------
+    // ---------- Shaders ----------
     const texturedWGSL = /* wgsl */`
       struct Params {
         exposureEV: f32,
@@ -148,7 +297,9 @@
         let p = pos[vid];
         var o: VSOut;
         o.pos = vec4f(p, 0.0, 1.0);
-        o.uv  = 0.5 * (p + vec2f(1.0, 1.0));
+        // Fix UV flipping for KTX2 (bottom-left origin)
+        let uv_raw = 0.5 * (p + vec2f(1.0, 1.0));
+        o.uv = vec2f(uv_raw.x, 1.0 - uv_raw.y);
         return o;
       }
 
@@ -241,7 +392,7 @@
     }
     let texBindGroup = texPipeline ? makeTexBindGroup() : null;
 
-    // ---------------- Frame loop ----------------
+    // ---------- Frame loop ----------
     function frame() {
       configureIfNeeded();
       const swap = context.getCurrentTexture();
@@ -251,7 +402,7 @@
 
       const encoder = device.createCommandEncoder();
 
-      // Clear
+      // Clear pass
       {
         const pass = encoder.beginRenderPass({
           colorAttachments: [{
@@ -264,14 +415,10 @@
         pass.end();
       }
 
-      // Draw
+      // Draw pass
       {
         const pass = encoder.beginRenderPass({
-          colorAttachments: [{
-            view: rtv,
-            loadOp: 'load',
-            storeOp: 'store'
-          }]
+          colorAttachments: [{ view: rtv, loadOp: 'load', storeOp: 'store' }]
         });
 
         if (texPipeline && texBindGroup) {
@@ -290,12 +437,14 @@
     }
     frame();
 
-    // adapter info
+    // ----------- Adapter info -----------
     try {
       const info = await adapter.requestAdapterInfo?.();
       if (info) log(`WebGPU OK — ${info.vendor} ${info.architecture} ${info.description}`);
       else log('WebGPU OK');
-    } catch { log('WebGPU OK'); }
+    } catch {
+      log('WebGPU OK');
+    }
   } catch (e) {
     console.error(e);
     log(String(e));
