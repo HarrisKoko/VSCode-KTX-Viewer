@@ -12,8 +12,11 @@ const log = (msg) => {
 function padRows(src, width, height, bytesPerPixel = 4) {
   const rowStride = width * bytesPerPixel;
   const aligned = Math.ceil(rowStride / 256) * 256;
+  
+  // if row of data is already aligned, return original.
   if (aligned === rowStride) return { data: src, bytesPerRow: rowStride };
 
+  // else, create new aligned buffer and copy rows over.
   const dst = new Uint8Array(aligned * height);
   for (let y = 0; y < height; y++) {
     const s0 = y * rowStride, d0 = y * aligned;

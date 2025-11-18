@@ -1,8 +1,7 @@
 // shaders.wgsl - WebGPU shader code
 
-// ============================================================================
 // TEXTURED SHADER (for displaying images/textures with tone mapping)
-// ============================================================================
+
 
 struct Params {
   exposureEV: f32,
@@ -29,7 +28,6 @@ struct VSOut {
   let p = pos[vid];
   var o: VSOut;
   o.pos = vec4f(p, 0.0, 1.0);
-  // Fix UV flipping for KTX2 (bottom-left origin)
   let uv_raw = 0.5 * (p + vec2f(1.0, 1.0));
   o.uv = vec2f(uv_raw.x, 1.0 - uv_raw.y);
   return o;
@@ -48,10 +46,7 @@ fn aces_tonemap(x: vec3f) -> vec3f {
 }
 
 
-// ============================================================================
 // SOLID COLOR SHADER (fallback when no texture is loaded)
-// ============================================================================
-
 struct VSOutSolid { 
   @builtin(position) pos: vec4f 
 }
