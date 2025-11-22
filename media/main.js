@@ -209,11 +209,22 @@ try {
     meta.textContent = '';
     if (texPipeline) texBindGroup = makeTexBindGroup();
   }
+  
+ // Wait for transcoder functions to be available
+  async function waitForTranscoder() {
+    let tries = 0;
+    while (typeof window.checkFormatRequirements !== 'function') {
+      if (tries++ > 100) throw new Error('Transcoder functions not loaded');
+      await new Promise(r => setTimeout(r, 50));
+    }
+  }
 
-  // KTX2 (BC1-BC7) — upload compressed blocks directly
+
+// KTX2 loader with automatic transcoding support
   async function loadKTX2_ToTexture(file) {
     if (!bcSupported) throw new Error('BC compressed textures not supported on this device.');
     await waitForKTXParser();
+    await waitForTranscoder();
 
     const buf = await file.arrayBuffer();
     const { header, levels, dfd, kvd } = await window.parseKTX2(buf);
@@ -223,55 +234,114 @@ try {
     if (!is2D) throw new Error('Only 2D, 1-face KTX2 supported in this demo.');
     if (header.supercompressionScheme !== 0) throw new Error('Supercompressed KTX2 not supported.');
 
-    // Use helper to get WebGPU format info
-    const formatInfo = window.vkFormatToWebGPU(header.vkFormat);
+    // CHECK: Does this format need transcoding?
+    const formatInfo = window.checkFormatRequirements(header.vkFormat);
+    
     if (!formatInfo) {
-      throw new Error(`Unsupported vkFormat ${header.vkFormat}. Supported: BC1-BC7.`);
+      throw new Error(`Unsupported format: ${window.getFormatName(header.vkFormat)}`);
     }
 
-    const { format: wgpuFormat, blockWidth, blockHeight, bytesPerBlock } = formatInfo;
-    const formatName = window.getFormatName(header.vkFormat);
+    let transcodedLevels = null;
+    let wgpuFormat, blockWidth, blockHeight, bytesPerBlock;
 
-    // create/recreate GPU texture
+    // NATIVE BC FORMAT - use as-is
+    if (!formatInfo.needsTranscoding) {
+      const info = window.vkFormatToWebGPU(header.vkFormat);
+      wgpuFormat = info.format;
+      blockWidth = info.blockWidth;
+      blockHeight = info.blockHeight;
+      bytesPerBlock = info.bytesPerBlock;
+    } 
+    // FORMAT REQUIRES TRANSCODING
+    else {
+      stat.textContent = `Loading ${file.name}... transcoding ${formatInfo.sourceFormat} to BC7`;
+      
+      try {
+        // Initialize Basis transcoder
+        await window.initBasisTranscoder();
+        
+        // Transcode each mip level
+        transcodedLevels = [];
+        for (let i = 0; i < levels.length; i++) {
+          stat.textContent = `Loading ${file.name}... transcoding mip ${i + 1}/${levels.length}`;
+          
+          const lvl = levels[i];
+          const raw = new Uint8Array(buf, lvl.byteOffset, lvl.byteLength);
+          
+          try {
+            const transcodedData = await window.transcodeToBC7(raw, lvl.width, lvl.height, header.vkFormat);
+            transcodedLevels.push({
+              data: transcodedData,
+              width: lvl.width,
+              height: lvl.height
+            });
+          } catch (e) {
+            throw new Error(`Failed to transcode mip level ${i}: ${e.message}`);
+          }
+        }
+        
+        // Use BC7 as target format
+        const bc7Info = window.vkFormatToWebGPU(145); // 145 = BC7 UNORM
+        wgpuFormat = bc7Info.format;
+        blockWidth = bc7Info.blockWidth;
+        blockHeight = bc7Info.blockHeight;
+        bytesPerBlock = bc7Info.bytesPerBlock;
+        
+      } catch (e) {
+        console.error(e);
+        log('Transcoding failed: ' + e.message);
+        stat.textContent = 'Error: ' + e.message;
+        throw e;
+      }
+    }
+
+    // Create GPU texture
     srcTex?.destroy?.();
     srcTex = device.createTexture({
       size: { width: header.pixelWidth, height: header.pixelHeight, depthOrArrayLayers: 1 },
       format: wgpuFormat,
-      mipLevelCount: levels.length,  
+      mipLevelCount: levels.length,
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
     });
     srcView = srcTex.createView();
 
-    // Upload ALL mip levels with proper block alignment
+    // Upload mip levels
     for (let i = 0; i < levels.length; i++) {
       const lvl = levels[i];
-      const raw = new Uint8Array(buf, lvl.byteOffset, lvl.byteLength);
+      
+      // Use transcoded data if available, otherwise original
+      let raw = transcodedLevels 
+        ? transcodedLevels[i].data 
+        : new Uint8Array(buf, lvl.byteOffset, lvl.byteLength);
 
-      // Pad block rows to 256B alignment
       const { data, bytesPerRow, rowsPerImage } =
         padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, blockWidth, blockHeight);
 
-      // Round up to nearest block multiple (5x5 becomes 8x8, 1x1 becomes 4x4, etc)
       const uploadWidth = Math.ceil(lvl.width / blockWidth) * blockWidth;
       const uploadHeight = Math.ceil(lvl.height / blockHeight) * blockHeight;
 
-      // Upload compressed data to specific mip level
       device.queue.writeTexture(
-        { 
-          texture: srcTex,
-          mipLevel: i
-        },
+        { texture: srcTex, mipLevel: i },
         data,
         { bytesPerRow, rowsPerImage },
         { width: uploadWidth, height: uploadHeight, depthOrArrayLayers: 1 }
       );
     }
 
+    // Update UI
     const lvl0 = levels[0];
-    stat.textContent = `Loaded ${file.name} (${lvl0.width}×${lvl0.height}, ${levels.length} mip${levels.length > 1 ? 's' : ''})`;
+    let statusText = `Loaded ${file.name} (${lvl0.width}×${lvl0.height}, ${levels.length} mip${levels.length > 1 ? 's' : ''})`;
+    if (formatInfo.needsTranscoding) {
+      statusText += ` [${formatInfo.sourceFormat} → BC7]`;
+    }
+    stat.textContent = statusText;
     
-    // Show metadata
-    let metaStr = `Format: ${formatName} (${wgpuFormat})`;
+    let metaStr = `Format: ${window.getFormatName(header.vkFormat)}`;
+    if (formatInfo.needsTranscoding) {
+      metaStr += ` → BC7`;
+    }
+    metaStr += ` (${wgpuFormat})`;
+    
     if (kvd && Object.keys(kvd).length > 0) {
       metaStr += `\nKVD: ${Object.keys(kvd).join(', ')}`;
       if (kvd.KTXorientation) metaStr += `\nOrientation: ${kvd.KTXorientation}`;

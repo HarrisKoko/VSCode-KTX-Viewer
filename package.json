@@ -3,8 +3,12 @@
     "displayName": "KTX2 HDR WebGPU Scratch",
     "publisher": "you",
     "version": "0.0.1",
-    "engines": { "vscode": "^1.93.0" },
-    "activationEvents": [ "onCommand:ktx2hdr.openWebgpuDemo" ],
+    "engines": {
+        "vscode": "^1.93.0"
+    },
+    "activationEvents": [
+        "onCommand:ktx2hdr.openWebgpuDemo"
+    ],
     "contributes": {
         "commands": [
             {
@@ -22,7 +26,10 @@
     },
     "devDependencies": {
         "@types/vscode": "^1.93.0",
-        "typescript": "^5.4.5",
-        "tslib": "^2.6.2"
+        "tslib": "^2.6.2",
+        "typescript": "^5.4.5"
+    },
+    "dependencies": {
+        "ktx-parse": "^1.1.0"
     }
 }

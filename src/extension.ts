@@ -16,6 +16,9 @@ export function activate(context: vscode.ExtensionContext) {
       const readUri = panel.webview.asWebviewUri(
         vscode.Uri.joinPath(context.extensionUri, 'media', 'read.js')
       );
+      const ktxTranscoderUri = panel.webview.asWebviewUri(
+        vscode.Uri.joinPath(context.extensionUri, 'media', 'transcoder.js')
+      );
       const scriptUri = panel.webview.asWebviewUri(
         vscode.Uri.joinPath(context.extensionUri, 'media', 'main.js')
       );
@@ -51,6 +54,7 @@ export function activate(context: vscode.ExtensionContext) {
             window.shaderUri = '${shaderUri}';
           </script>
           <script nonce="${nonce}" src="${readUri}"></script>
+          <script nonce="${nonce}" src="${ktxTranscoderUri}"></script>
           <script nonce="${nonce}" type="module" src="${scriptUri}"></script>
         </body>
         </html>`;
