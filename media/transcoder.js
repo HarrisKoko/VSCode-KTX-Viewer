@@ -1,7 +1,114 @@
-// transcoder.js - Format detection and Basis Universal transcoding
+// transcoder.js - Basis Universal transcoder only
 
 let basisTranscoder = null;
 let basisReady = false;
+
+/**
+ * Initialize Basis Universal transcoder for ETC1S/UASTC only
+ * Uses local file loaded from extension directory
+ */
+async function initBasisTranscoder() {
+  if (basisReady) return basisTranscoder;
+  if (basisTranscoder) return basisTranscoder;
+  
+  try {
+    console.log('Initializing Basis Universal transcoder...');
+    console.log('window.BASIS available:', !!window.BASIS);
+    
+    // Check if BASIS module exists and try to initialize it
+    if (!window.BASIS) {
+      throw new Error('BASIS module not found - basis_transcoder.js may not have loaded');
+    }
+
+    console.log('BASIS module found. Calling initialization...');
+    
+    // Initialize the module - BASIS() is an async factory function
+    if (typeof window.BASIS === 'function') {
+      console.log('BASIS is a function, calling it to initialize...');
+      basisTranscoder = await window.BASIS();
+      console.log('✓ Basis Universal initialized');
+    } else if (window.BASIS.isReady?.()) {
+      console.log('BASIS is already initialized');
+      basisTranscoder = window.BASIS;
+    } else {
+      console.log('Waiting for BASIS to be ready...');
+      let attempts = 0;
+      const maxAttempts = 300; // 30 seconds at 100ms intervals
+      
+      await new Promise((resolve, reject) => {
+        const checkReady = setInterval(() => {
+          attempts++;
+          console.log(`Attempt ${attempts}: BASIS.isReady() = ${window.BASIS?.isReady?.()}`);
+          
+          if (window.BASIS?.isReady?.()) {
+            clearInterval(checkReady);
+            basisTranscoder = window.BASIS;
+            console.log('✓ Basis Universal ready');
+            resolve();
+          }
+          
+          if (attempts >= maxAttempts) {
+            clearInterval(checkReady);
+            reject(new Error('Basis initialization timeout after 30 seconds'));
+          }
+        }, 100);
+      });
+    }
+    
+    basisReady = true;
+    console.log('✓ Basis transcoder initialized successfully');
+    return basisTranscoder;
+    
+  } catch (e) {
+    console.error('Basis transcoder initialization failed:', e);
+    console.error('Error details:', e.message);
+    console.error('Stack:', e.stack);
+    basisReady = true; // Mark as attempted to prevent retries
+    throw e; // Re-throw so caller knows transcoding failed
+  }
+}
+
+/**
+ * Transcode Basis Universal compressed data to BC7
+ * Handles both raw Basis files and KTX2 Basis supercompressed data
+ */
+async function transcodeBasisToBC7(compressedData, width, height) {
+  const basis = await initBasisTranscoder();
+  
+  if (!basis) {
+    throw new Error('Basis transcoder not available');
+  }
+  
+  try {
+    console.log(`Transcoding Basis data (${width}x${height}, ${compressedData.byteLength} bytes)...`);
+    
+    // Create a BasisFile from the compressed data
+    // This works for both raw .basis files and KTX2 Basis supercompressed data
+    const basisFile = new basis.BasisFile(new Uint8Array(compressedData));
+    
+    if (!basisFile.startTranscoding()) {
+      throw new Error('Failed to start Basis transcoding - data may be corrupted or not valid Basis format');
+    }
+
+    console.log(`BasisFile info: images=${basisFile.getNumImages()}, levels=${basisFile.getNumLevels(0)}`);
+
+    // Get the transcoded BC7 data
+    // Parameters: image_index=0 (first/only image), level_index=0 (first mip)
+    const transcodedData = basisFile.getImageTranscodedData(0, 0, basis.eBASIS_BC7_M6_OPAQUE_FAST);
+    
+    if (!transcodedData || transcodedData.length === 0) {
+      throw new Error('Transcoding returned empty data');
+    }
+    
+    basisFile.close();
+    
+    console.log(`✓ Transcoded to BC7 (${transcodedData.length} bytes)`);
+    return new Uint8Array(transcodedData);
+  } catch (e) {
+    console.error('Transcoding error details:', e);
+    throw new Error(`Basis transcoding failed: ${e.message}`);
+  }
+}
 
 // Native BC formats that WebGPU supports (no transcoding needed)
 const NATIVE_BC_FORMATS = {
@@ -21,146 +128,20 @@ const NATIVE_BC_FORMATS = {
   146: 'bc7-rgba-unorm-srgb',
 };
 
-// Formats that require transcoding to BC7
-const FORMATS_REQUIRING_TRANSCODING = {
-  // ASTC formats (mobile)
-  148: { name: 'ASTC', targetVK: 145 },
-  149: { name: 'ASTC SRGB', targetVK: 146 },
-  
-  // ETC formats (mobile) - multiple VK codes for variants
-  147: { name: 'ETC2', targetVK: 145 },
-  152: { name: 'ETC2', targetVK: 145 },
-  153: { name: 'ETC2 SRGB', targetVK: 146 },
-  150: { name: 'ETC2 A1', targetVK: 145 },
-  151: { name: 'ETC2 A1 SRGB', targetVK: 146 },
-  154: { name: 'ETC2 A8', targetVK: 145 },
-  155: { name: 'ETC2 A8 SRGB', targetVK: 146 },
-  156: { name: 'EAC R11', targetVK: 139 }, // BC4
-  157: { name: 'EAC R11 SNORM', targetVK: 140 },
-  158: { name: 'EAC RG11', targetVK: 141 }, // BC5
-  159: { name: 'EAC RG11 SNORM', targetVK: 142 },
-  
-  // PVRTC formats (iOS)
-  160: { name: 'PVRTC', targetVK: 145 },
-  161: { name: 'PVRTC SRGB', targetVK: 146 },
-};
-
 /**
- * Initialize Basis Universal transcoder from CDN
- */
-async function initBasisTranscoder() {
-  if (basisReady) return basisTranscoder;
-  
-  try {
-    // Load the transcoder script from THREE.js examples
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/three@r128/examples/js/libs/basis/basis_transcoder.js';
-    script.async = true;
-    
-    // Get nonce from existing script tag if available
-    const existingScript = document.querySelector('script[nonce]');
-    if (existingScript?.nonce) {
-      script.nonce = existingScript.nonce;
-    }
-    
-    await new Promise((resolve, reject) => {
-      script.onload = resolve;
-      script.onerror = reject;
-      document.head.appendChild(script);
-    });
-
-    // Wait for BASIS module to initialize
-    if (!window.BASIS) {
-      throw new Error('Basis module not found');
-    }
-
-    await new Promise((resolve, reject) => {
-      const checkReady = setInterval(() => {
-        if (window.BASIS?.isReady?.()) {
-          clearInterval(checkReady);
-          basisTranscoder = window.BASIS;
-          basisReady = true;
-          console.log('Basis Universal transcoder ready');
-          resolve();
-        }
-      }, 100);
-
-      setTimeout(() => {
-        clearInterval(checkReady);
-        reject(new Error('Basis initialization timeout'));
-      }, 10000);
-    });
-
-    return basisTranscoder;
-  } catch (e) {
-    console.error('Basis transcoder failed to load:', e);
-    throw e;
-  }
-}
-
-/**
- * Transcode compressed data from one format to BC7
- * Works with raw block data from KTX2 mip levels
- */
-async function transcodeToBC7(compressedData, width, height, sourceVkFormat) {
-  const basis = await initBasisTranscoder();
-  
-  try {
-    // Create a BasisFile from the compressed data
-    const basisFile = new basis.BasisFile(new Uint8Array(compressedData));
-    
-    if (!basisFile.startTranscoding()) {
-      throw new Error('Failed to start Basis transcoding');
-    }
-
-    // Get the transcoded BC7 data
-    // Parameters: image_index=0 (first/only image), level_index=0 (first mip)
-    const transcodedData = basisFile.getImageTranscodedData(0, 0, basis.eBASIS_BC7_M6_OPAQUE_FAST);
-    
-    basisFile.close();
-    
-    return new Uint8Array(transcodedData);
-  } catch (e) {
-    throw new Error(`Transcoding failed: ${e.message}`);
-  }
-}
-
-/**
- * Check if a VK format needs transcoding
- * @param {number} vkFormat - Vulkan format code
- * @returns {Object|null}
+ * Check if a format needs transcoding (only for non-Basis formats)
  */
 function checkFormatRequirements(vkFormat) {
-  // Check if it's a native BC format (no transcoding needed)
+  // Native BC format - no transcoding needed
   if (NATIVE_BC_FORMATS[vkFormat]) {
     return {
-      needsTranscoding: false,
+      needsProcessing: false,
       format: NATIVE_BC_FORMATS[vkFormat],
       vkFormat: vkFormat
     };
   }
 
-  // Check if it needs transcoding
-  if (FORMATS_REQUIRING_TRANSCODING[vkFormat]) {
-    const info = FORMATS_REQUIRING_TRANSCODING[vkFormat];
-    return {
-      needsTranscoding: true,
-      sourceFormat: info.name,
-      sourceVK: vkFormat,
-      targetVK: info.targetVK,
-      targetFormat: NATIVE_BC_FORMATS[info.targetVK]
-    };
-  }
-
-  // Unsupported format
   return null;
-}
-
-/**
- * Simple check: is this a native BC format?
- */
-function isNativeBCFormat(vkFormat) {
-  return NATIVE_BC_FORMATS[vkFormat] !== undefined;
 }
 
 /**
@@ -168,6 +149,7 @@ function isNativeBCFormat(vkFormat) {
  */
 function getFormatName(vkFormat) {
   const names = {
+    0: 'VK_FORMAT_UNDEFINED (Basis Universal)',
     131: 'BC1 (DXT1) UNORM',
     132: 'BC1 (DXT1) SRGB',
     135: 'BC2 (DXT3) UNORM',
@@ -182,28 +164,13 @@ function getFormatName(vkFormat) {
     144: 'BC6H FLOAT',
     145: 'BC7 UNORM',
     146: 'BC7 SRGB',
-    147: 'ETC2',
-    148: 'ASTC',
-    149: 'ASTC SRGB',
-    150: 'ETC2 A1',
-    151: 'ETC2 A1 SRGB',
-    152: 'ETC2',
-    153: 'ETC2 SRGB',
-    154: 'ETC2 A8',
-    155: 'ETC2 A8 SRGB',
-    156: 'EAC R11',
-    157: 'EAC R11 SNORM',
-    158: 'EAC RG11',
-    159: 'EAC RG11 SNORM',
-    160: 'PVRTC',
-    161: 'PVRTC SRGB',
   };
   return names[vkFormat] || `VK Format ${vkFormat}`;
 }
 
 // Expose to global scope
 window.initBasisTranscoder = initBasisTranscoder;
-window.transcodeToBC7 = transcodeToBC7;
+window.transcodeBasisToBC7 = transcodeBasisToBC7;
 window.checkFormatRequirements = checkFormatRequirements;
-window.isNativeBCFormat = isNativeBCFormat;
 window.getFormatName = getFormatName;
+window.NATIVE_BC_FORMATS = NATIVE_BC_FORMATS;

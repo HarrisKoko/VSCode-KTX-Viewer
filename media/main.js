@@ -210,21 +210,19 @@ try {
     if (texPipeline) texBindGroup = makeTexBindGroup();
   }
   
- // Wait for transcoder functions to be available
-  async function waitForTranscoder() {
+async function waitForTranscoder() {
     let tries = 0;
     while (typeof window.checkFormatRequirements !== 'function') {
-      if (tries++ > 100) throw new Error('Transcoder functions not loaded');
+      if (tries++ > 200) throw new Error('Transcoder functions not loaded');
       await new Promise(r => setTimeout(r, 50));
     }
+    console.log('✓ Transcoder functions available');
   }
 
-
-// KTX2 loader with automatic transcoding support
+  // KTX2 loader supporting BC1-BC7 natively and Basis Universal via transcoding
   async function loadKTX2_ToTexture(file) {
     if (!bcSupported) throw new Error('BC compressed textures not supported on this device.');
     await waitForKTXParser();
-    await waitForTranscoder();
 
     const buf = await file.arrayBuffer();
     const { header, levels, dfd, kvd } = await window.parseKTX2(buf);
@@ -232,33 +230,40 @@ try {
     // Validation
     const is2D = header.pixelDepth === 0 && header.faceCount === 1;
     if (!is2D) throw new Error('Only 2D, 1-face KTX2 supported in this demo.');
-    if (header.supercompressionScheme !== 0) throw new Error('Supercompressed KTX2 not supported.');
-
-    // CHECK: Does this format need transcoding?
-    const formatInfo = window.checkFormatRequirements(header.vkFormat);
     
-    if (!formatInfo) {
-      throw new Error(`Unsupported format: ${window.getFormatName(header.vkFormat)}`);
+    // Allow Basis Universal supercompression (scheme 1 = BASISLZ)
+    const isBasisFormat = header.supercompressionScheme === 1;
+    if (header.supercompressionScheme !== 0 && !isBasisFormat) {
+      throw new Error('Supercompressed KTX2 (ZSTD/ZLIB) not supported. Only Basis Universal supported.');
     }
 
-    let transcodedLevels = null;
+    // CHECK: What format is this?
+    const formatInfo = window.checkFormatRequirements(header.vkFormat);
+    
     let wgpuFormat, blockWidth, blockHeight, bytesPerBlock;
+    let transcodedLevels = null;
 
-    // NATIVE BC FORMAT - use as-is
-    if (!formatInfo.needsTranscoding) {
-      const info = window.vkFormatToWebGPU(header.vkFormat);
-      wgpuFormat = info.format;
-      blockWidth = info.blockWidth;
-      blockHeight = info.blockHeight;
-      bytesPerBlock = info.bytesPerBlock;
-    } 
-    // FORMAT REQUIRES TRANSCODING
-    else {
-      stat.textContent = `Loading ${file.name}... transcoding ${formatInfo.sourceFormat} to BC7`;
+    // Special case: Basis Universal formats use VK_FORMAT_UNDEFINED (0)
+    if (isBasisFormat && header.vkFormat === 0) {
+      // DFD descriptor tells us if it's ETC1S or UASTC
+      let basisFormatName = 'Basis Universal';
+      if (dfd && dfd.length > 0) {
+        // ETC1S has colorModel 163, UASTC has colorModel 166
+        if (dfd[0].colorModel === 163) basisFormatName = 'ETC1S';
+        else if (dfd[0].colorModel === 166) basisFormatName = 'UASTC';
+      }
+      
+      stat.textContent = `Loading ${file.name}... initializing transcoder for ${basisFormatName}`;
+      meta.textContent = 'Initializing Basis Universal...';
       
       try {
-        // Initialize Basis transcoder
         await window.initBasisTranscoder();
+        
+        // Basis will transcode to BC7
+        wgpuFormat = 'bc7-rgba-unorm';
+        blockWidth = 4;
+        blockHeight = 4;
+        bytesPerBlock = 16;
         
         // Transcode each mip level
         transcodedLevels = [];
@@ -268,24 +273,20 @@ try {
           const lvl = levels[i];
           const raw = new Uint8Array(buf, lvl.byteOffset, lvl.byteLength);
           
+          console.log(`Mip ${i}: offset=${lvl.byteOffset}, length=${lvl.byteLength}, width=${lvl.width}, height=${lvl.height}`);
+          
           try {
-            const transcodedData = await window.transcodeToBC7(raw, lvl.width, lvl.height, header.vkFormat);
+            const transcodedData = await window.transcodeBasisToBC7(raw, lvl.width, lvl.height);
             transcodedLevels.push({
               data: transcodedData,
               width: lvl.width,
               height: lvl.height
             });
           } catch (e) {
+            console.error(`Mip ${i} transcoding error:`, e);
             throw new Error(`Failed to transcode mip level ${i}: ${e.message}`);
           }
         }
-        
-        // Use BC7 as target format
-        const bc7Info = window.vkFormatToWebGPU(145); // 145 = BC7 UNORM
-        wgpuFormat = bc7Info.format;
-        blockWidth = bc7Info.blockWidth;
-        blockHeight = bc7Info.blockHeight;
-        bytesPerBlock = bc7Info.bytesPerBlock;
         
       } catch (e) {
         console.error(e);
@@ -293,6 +294,19 @@ try {
         stat.textContent = 'Error: ' + e.message;
         throw e;
       }
+    }
+    // PATH 1: NATIVE BC FORMAT - use existing code as-is
+    else if (formatInfo && !formatInfo.needsProcessing) {
+      const info = window.vkFormatToWebGPU(header.vkFormat);
+      wgpuFormat = info.format;
+      blockWidth = info.blockWidth;
+      blockHeight = info.blockHeight;
+      bytesPerBlock = info.bytesPerBlock;
+      
+      stat.textContent = `Loading ${file.name}...`;
+    } 
+    else {
+      throw new Error(`Unsupported format: ${window.getFormatName(header.vkFormat)}`);
     }
 
     // Create GPU texture
@@ -331,13 +345,13 @@ try {
     // Update UI
     const lvl0 = levels[0];
     let statusText = `Loaded ${file.name} (${lvl0.width}×${lvl0.height}, ${levels.length} mip${levels.length > 1 ? 's' : ''})`;
-    if (formatInfo.needsTranscoding) {
-      statusText += ` [${formatInfo.sourceFormat} → BC7]`;
+    if (isBasisFormat) {
+      statusText += ` [Basis → BC7]`;
     }
     stat.textContent = statusText;
     
     let metaStr = `Format: ${window.getFormatName(header.vkFormat)}`;
-    if (formatInfo.needsTranscoding) {
+    if (isBasisFormat) {
       metaStr += ` → BC7`;
     }
     metaStr += ` (${wgpuFormat})`;
@@ -347,7 +361,7 @@ try {
       if (kvd.KTXorientation) metaStr += `\nOrientation: ${kvd.KTXorientation}`;
     }
     if (dfd) {
-      metaStr += `\nDFD: colorModel=${dfd.colorModel}, transfer=${dfd.transferFunction}`;
+      metaStr += `\nDFD: colorModel=${dfd.colorModel}`;
     }
     meta.textContent = metaStr;
 

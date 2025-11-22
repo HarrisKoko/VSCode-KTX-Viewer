@@ -19,6 +19,12 @@ export function activate(context: vscode.ExtensionContext) {
       const ktxTranscoderUri = panel.webview.asWebviewUri(
         vscode.Uri.joinPath(context.extensionUri, 'media', 'transcoder.js')
       );
+      const basisUri = panel.webview.asWebviewUri(
+        vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'basis_transcoder.js')
+      );
+      const basisWasmUri = panel.webview.asWebviewUri(
+        vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'basis_transcoder.wasm')
+      );
       const scriptUri = panel.webview.asWebviewUri(
         vscode.Uri.joinPath(context.extensionUri, 'media', 'main.js')
       );
@@ -32,10 +38,16 @@ export function activate(context: vscode.ExtensionContext) {
         <html lang="en">
         <head>
           <meta charset="UTF-8" />
-          <meta
-            http-equiv="Content-Security-Policy"
-            content="default-src 'none'; style-src 'unsafe-inline' ${panel.webview.cspSource}; img-src ${panel.webview.cspSource}; script-src 'nonce-${nonce}'; connect-src ${panel.webview.cspSource};"
-          />
+          <!-- ✔ Updated CSP: allow WASM execution -->
+          <meta http-equiv="Content-Security-Policy"
+            content="
+              default-src 'none';
+              img-src ${panel.webview.cspSource};
+              style-src 'unsafe-inline' ${panel.webview.cspSource};
+              script-src 'unsafe-eval' 'nonce-${nonce}' ${panel.webview.cspSource};
+              connect-src ${panel.webview.cspSource};
+              worker-src blob:;
+            ">
           <meta name="viewport" content="width=device-width,initial-scale=1" />
           <title>WebGPU KTX2 Viewer</title>
           <style>
@@ -53,8 +65,14 @@ export function activate(context: vscode.ExtensionContext) {
             // Inject shader URI as global variable
             window.shaderUri = '${shaderUri}';
           </script>
-          <script nonce="${nonce}" src="${readUri}"></script>
+          <script nonce="${nonce}">
+            window.BASIS_WASMPATH = "${basisWasmUri}";
+            console.log("BASIS WASM path:", window.BASIS_WASMPATH);
+          </script>
+          
+          <script nonce="${nonce}" src="${basisUri}"></script>
           <script nonce="${nonce}" src="${ktxTranscoderUri}"></script>
+          <script nonce="${nonce}" src="${readUri}"></script>
           <script nonce="${nonce}" type="module" src="${scriptUri}"></script>
         </body>
         </html>`;
