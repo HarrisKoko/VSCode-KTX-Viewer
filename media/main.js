@@ -197,94 +197,78 @@ try {
   let srcView = srcTex.createView();
 
 
-  window.transcodeFullKTX2 = async function(fileBuffer) {
+async function transcodeFullKTX2(fileBuffer) {
   const m = await initLibKTX();
 
   let texture = null;
   try {
     // 1. LOAD TEXTURE
     try {
-        const data = new Uint8Array(fileBuffer);
-        texture = new m.ktxTexture(data); 
+      const data = new Uint8Array(fileBuffer);
+      texture = new m.ktxTexture(data);
     } catch (e) {
-        throw new Error(`Failed to create ktxTexture: ${e.message}`);
+      throw new Error(`Failed to create ktxTexture: ${e.message}`);
     }
     
     // 2. CHECK TRANSCODING NEEDS
     let shouldTranscode = false;
     if (texture.needsTranscoding && typeof texture.needsTranscoding === 'function') {
-        shouldTranscode = texture.needsTranscoding();
+      shouldTranscode = texture.needsTranscoding;
     } else if (texture.vkFormat === 0) {
-        shouldTranscode = true;
+      shouldTranscode = true;
     }
 
     // 3. TRANSCODE
     if (shouldTranscode) {
-      // Target format: BC7_M5_RGBA = 16
-      // Safely resolve the enum or fallback to 16
       let targetFormat = (
-          m.TranscodeTarget?.BC7_RGBA?.value ??
-          m.TranscodeTarget?.BC7_RGBA ??
-          0x93  // safe fallback value inside libktx
+        m.TranscodeTarget?.BC7_RGBA?.value ??
+        m.TranscodeTarget?.BC7_RGBA ??
+        0x93 
       );
 
       if (m.TranscodeTarget && m.TranscodeTarget.BC7_M5_RGBA !== undefined) {
-          targetFormat = m.TranscodeTarget.BC7_M5_RGBA.value || m.TranscodeTarget.BC7_M5_RGBA;
+        targetFormat = m.TranscodeTarget.BC7_M5_RGBA.value || m.TranscodeTarget.BC7_M5_RGBA;
       }
       
-      const flags = 0;
-
-      if (typeof texture.transcodeBasis !== 'function') {
-         throw new Error("texture.transcodeBasis function is missing");
-      }
-
-      if (!texture.transcodeBasis(targetFormat, flags)) {
-        throw new Error("libktx transcoding failed (transcodeBasis returned false)");
+      if (!texture.transcodeBasis(targetFormat, 0)) {
+        throw new Error("libktx transcoding failed");
       }
     }
 
-    // 4. GET TEXTURE DATA
-    let texData;
-
-    const heap = m.HEAPU8;
-
-    // libktx always exposes these hidden fields:
-    const ptr = texture._data;
-    const size = texture._dataSize;
-
-    if (!ptr || !size) {
-        console.error("Texture object:", texture);
-        throw new Error("libktx: Could not determine data pointer or size.");
-    }
-
-    texData = heap.subarray(ptr, ptr + size);
-
-    // 5. GENERATE MIP MAPS
+  // 4. GET TEXTURE DATA
     const mips = [];
-    for (let i = 0; i < texture.numLevels; i++) {
-      const offset = texture.getImageOffset(i, 0, 0);
-      const size = texture.getImageSize(i, 0, 0);
-      
-      // We must slice (copy) the data here because texture.delete() 
-      // at the end of this block will free the underlying WASM memory.
-      const mipData = texData.slice(offset, offset + size);
+    const numLevels = texture.numLevels || 1; // Default to 1 if property is missing
+
+    for (let i = 0; i < numLevels; i++) {
+      let mipData = null;
+
+      // Use the API exposed in your log: getImage(level, layer, face)
+      if (texture.getImage) {
+          mipData = texture.getImage(i, 0, 0);
+      } else {
+          throw new Error("texture.getImage() is missing, but required for this libktx version.");
+      }
+
+      // If it returns a view into WASM memory, we MUST copy it
+      // because texture.delete() will invalidate the memory.
+      const mipCopy = new Uint8Array(mipData);
 
       mips.push({
-        data: mipData,
-        width: texture.baseWidth >> i,
-        height: texture.baseHeight >> i
+        data: mipCopy,
+        width: Math.max(1, texture.baseWidth >> i),
+        height: Math.max(1, texture.baseHeight >> i)
       });
     }
 
     return mips;
 
   } catch(e) {
-      console.error("KTX2 Processing Error:", e);
-      throw e;
+    console.error("KTX2 Processing Error:", e);
+    throw e;
   } finally {
     if (texture && texture.delete) texture.delete();
   }
-};
+}
 
   // ---------- Loaders ----------
 
