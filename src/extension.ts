@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 
+
+
 export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('ktx2hdr.openWebgpuDemo', () => {
@@ -16,38 +18,47 @@ export function activate(context: vscode.ExtensionContext) {
       const readUri = panel.webview.asWebviewUri(
         vscode.Uri.joinPath(context.extensionUri, 'media', 'read.js')
       );
+
       const ktxTranscoderUri = panel.webview.asWebviewUri(
         vscode.Uri.joinPath(context.extensionUri, 'media', 'transcoder.js')
       );
-      const basisUri = panel.webview.asWebviewUri(
-        vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'basis_transcoder.js')
+
+     // --- UPDATED: Point to libktx.js instead of basis_transcoder.js ---
+
+      const libktxUri = panel.webview.asWebviewUri(
+        vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'libktx.js')
       );
-      const basisWasmUri = panel.webview.asWebviewUri(
-        vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'basis_transcoder.wasm')
+
+      // --- UPDATED: Point to libktx.wasm ---
+      const libktxWasmUri = panel.webview.asWebviewUri(
+        vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'libktx.wasm')
       );
+
       const scriptUri = panel.webview.asWebviewUri(
         vscode.Uri.joinPath(context.extensionUri, 'media', 'main.js')
       );
+
       const shaderUri = panel.webview.asWebviewUri(
         vscode.Uri.joinPath(context.extensionUri, 'media', 'shaders.wgsl')
       );
 
-      const nonce = getNonce();
+     const nonce = getNonce();
+
       panel.webview.html = /* html */`
+
         <!DOCTYPE html>
         <html lang="en">
         <head>
           <meta charset="UTF-8" />
-          <!-- ✔ Updated CSP: allow WASM execution -->
           <meta http-equiv="Content-Security-Policy"
-            content="
-              default-src 'none';
-              img-src ${panel.webview.cspSource};
-              style-src 'unsafe-inline' ${panel.webview.cspSource};
-              script-src 'unsafe-eval' 'nonce-${nonce}' ${panel.webview.cspSource};
-              connect-src ${panel.webview.cspSource};
-              worker-src blob:;
-            ">
+          content="
+            default-src 'none';
+            img-src ${panel.webview.cspSource};
+            style-src 'unsafe-inline' ${panel.webview.cspSource};
+            script-src 'unsafe-eval' 'wasm-unsafe-eval' 'nonce-${nonce}' ${panel.webview.cspSource};
+            connect-src ${panel.webview.cspSource};
+            worker-src blob:;
+          ">
           <meta name="viewport" content="width=device-width,initial-scale=1" />
           <title>WebGPU KTX2 Viewer</title>
           <style>
@@ -62,19 +73,20 @@ export function activate(context: vscode.ExtensionContext) {
             <div id="log">Initializing…</div>
           </div>
           <script nonce="${nonce}">
-            // Inject shader URI as global variable
             window.shaderUri = '${shaderUri}';
           </script>
-          <script nonce="${nonce}">
-            window.BASIS_WASMPATH = "${basisWasmUri}";
-            console.log("BASIS WASM path:", window.BASIS_WASMPATH);
+          <script nonce="${nonce}" type="module">
+          import LIBKTX from '${libktxUri}';
+          window.LIBKTX = LIBKTX;
+          console.log('✓ libktx imported');       
+          import('./main.js');
           </script>
-          
-          <script nonce="${nonce}" src="${basisUri}"></script>
           <script nonce="${nonce}" src="${ktxTranscoderUri}"></script>
           <script nonce="${nonce}" src="${readUri}"></script>
           <script nonce="${nonce}" type="module" src="${scriptUri}"></script>
+
         </body>
+
         </html>`;
 
     })
@@ -87,5 +99,6 @@ function getNonce() {
   const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let text = '';
   for (let i = 0; i < 32; i++) text += possible.charAt(Math.floor(Math.random() * possible.length));
+
   return text;
 }

@@ -1,4 +1,19 @@
-// main.js — JPG/PNG/WebP renderer + KTX2 (BC1-BC7) loader using WebGPU
+// main.js — ES Module version
+import {
+  initLibKTX,
+  transcodeFullKTX2,
+  checkFormatRequirements,
+  getFormatName,
+  vkFormatToWebGPU
+} from './transcoder.js'; // This works because of the importmap in extension.ts
+
+// Make functions available globally for backward compatibility
+window.initLibKTX = initLibKTX;
+window.transcodeFullKTX2 = transcodeFullKTX2;
+window.checkFormatRequirements = checkFormatRequirements;
+window.getFormatName = getFormatName;
+window.vkFormatToWebGPU = vkFormatToWebGPU;
+
 
 // Minimal logger to the on-screen <div id="log">
 const log = (msg) => {
@@ -181,6 +196,96 @@ try {
   }
   let srcView = srcTex.createView();
 
+
+  window.transcodeFullKTX2 = async function(fileBuffer) {
+  const m = await initLibKTX();
+
+  let texture = null;
+  try {
+    // 1. LOAD TEXTURE
+    try {
+        const data = new Uint8Array(fileBuffer);
+        texture = new m.ktxTexture(data); 
+    } catch (e) {
+        throw new Error(`Failed to create ktxTexture: ${e.message}`);
+    }
+    
+    // 2. CHECK TRANSCODING NEEDS
+    let shouldTranscode = false;
+    if (texture.needsTranscoding && typeof texture.needsTranscoding === 'function') {
+        shouldTranscode = texture.needsTranscoding();
+    } else if (texture.vkFormat === 0) {
+        shouldTranscode = true;
+    }
+
+    // 3. TRANSCODE
+    if (shouldTranscode) {
+      // Target format: BC7_M5_RGBA = 16
+      // Safely resolve the enum or fallback to 16
+      let targetFormat = (
+          m.TranscodeTarget?.BC7_RGBA?.value ??
+          m.TranscodeTarget?.BC7_RGBA ??
+          0x93  // safe fallback value inside libktx
+      );
+
+      if (m.TranscodeTarget && m.TranscodeTarget.BC7_M5_RGBA !== undefined) {
+          targetFormat = m.TranscodeTarget.BC7_M5_RGBA.value || m.TranscodeTarget.BC7_M5_RGBA;
+      }
+      
+      const flags = 0;
+
+      if (typeof texture.transcodeBasis !== 'function') {
+         throw new Error("texture.transcodeBasis function is missing");
+      }
+
+      if (!texture.transcodeBasis(targetFormat, flags)) {
+        throw new Error("libktx transcoding failed (transcodeBasis returned false)");
+      }
+    }
+
+    // 4. GET TEXTURE DATA
+    let texData;
+
+    const heap = m.HEAPU8;
+
+    // libktx always exposes these hidden fields:
+    const ptr = texture._data;
+    const size = texture._dataSize;
+
+    if (!ptr || !size) {
+        console.error("Texture object:", texture);
+        throw new Error("libktx: Could not determine data pointer or size.");
+    }
+
+    texData = heap.subarray(ptr, ptr + size);
+
+    // 5. GENERATE MIP MAPS
+    const mips = [];
+    for (let i = 0; i < texture.numLevels; i++) {
+      const offset = texture.getImageOffset(i, 0, 0);
+      const size = texture.getImageSize(i, 0, 0);
+      
+      // We must slice (copy) the data here because texture.delete() 
+      // at the end of this block will free the underlying WASM memory.
+      const mipData = texData.slice(offset, offset + size);
+
+      mips.push({
+        data: mipData,
+        width: texture.baseWidth >> i,
+        height: texture.baseHeight >> i
+      });
+    }
+
+    return mips;
+
+  } catch(e) {
+      console.error("KTX2 Processing Error:", e);
+      throw e;
+  } finally {
+    if (texture && texture.delete) texture.delete();
+  }
+};
+
   // ---------- Loaders ----------
 
   // Uncompressed images (JPEG/PNG/WebP)
@@ -210,14 +315,6 @@ try {
     if (texPipeline) texBindGroup = makeTexBindGroup();
   }
   
-async function waitForTranscoder() {
-    let tries = 0;
-    while (typeof window.checkFormatRequirements !== 'function') {
-      if (tries++ > 200) throw new Error('Transcoder functions not loaded');
-      await new Promise(r => setTimeout(r, 50));
-    }
-    console.log('✓ Transcoder functions available');
-  }
 
   // KTX2 loader supporting BC1-BC7 natively and Basis Universal via transcoding
   async function loadKTX2_ToTexture(file) {
@@ -248,7 +345,6 @@ async function waitForTranscoder() {
       // DFD descriptor tells us if it's ETC1S or UASTC
       let basisFormatName = 'Basis Universal';
       if (dfd && dfd.length > 0) {
-        // ETC1S has colorModel 163, UASTC has colorModel 166
         if (dfd[0].colorModel === 163) basisFormatName = 'ETC1S';
         else if (dfd[0].colorModel === 166) basisFormatName = 'UASTC';
       }
@@ -257,36 +353,21 @@ async function waitForTranscoder() {
       meta.textContent = 'Initializing Basis Universal...';
       
       try {
-        await window.initBasisTranscoder();
+        await window.initLibKTX();
         
-        // Basis will transcode to BC7
+        // Settings for BC7
         wgpuFormat = 'bc7-rgba-unorm';
         blockWidth = 4;
         blockHeight = 4;
         bytesPerBlock = 16;
         
-        // Transcode each mip level
-        transcodedLevels = [];
-        for (let i = 0; i < levels.length; i++) {
-          stat.textContent = `Loading ${file.name}... transcoding mip ${i + 1}/${levels.length}`;
-          
-          const lvl = levels[i];
-          const raw = new Uint8Array(buf, lvl.byteOffset, lvl.byteLength);
-          
-          console.log(`Mip ${i}: offset=${lvl.byteOffset}, length=${lvl.byteLength}, width=${lvl.width}, height=${lvl.height}`);
-          
-          try {
-            const transcodedData = await window.transcodeBasisToBC7(raw, lvl.width, lvl.height);
-            transcodedLevels.push({
-              data: transcodedData,
-              width: lvl.width,
-              height: lvl.height
-            });
-          } catch (e) {
-            console.error(`Mip ${i} transcoding error:`, e);
-            throw new Error(`Failed to transcode mip level ${i}: ${e.message}`);
-          }
-        }
+        stat.textContent = `Transcoding ${levels.length} mips...`;
+
+        // FIXED: Transcode the WHOLE file at once
+        // This parses the global codebooks correctly
+        transcodedLevels = await window.transcodeFullKTX2(buf);
+        
+        console.log("Transcoding success:", transcodedLevels);
         
       } catch (e) {
         console.error(e);
