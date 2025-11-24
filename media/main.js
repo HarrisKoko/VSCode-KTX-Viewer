@@ -90,9 +90,21 @@ try {
     throw new Error('No GPU adapter');
   }
 
+  const requiredFeatures = [];
+
+  // Check for each compression type:
+  if (adapter.features.has('texture-compression-bc'))
+    requiredFeatures.push('texture-compression-bc');
+
+  if (adapter.features.has('texture-compression-etc2'))
+    requiredFeatures.push('texture-compression-etc2');
+
+  if (adapter.features.has('texture-compression-astc'))
+    requiredFeatures.push('texture-compression-astc');
+
   const bcSupported = adapter.features.has('texture-compression-bc');
   const device = await adapter.requestDevice({
-    requiredFeatures: bcSupported ? ['texture-compression-bc'] : []
+    requiredFeatures
   });
 
   device.addEventListener?.('uncapturederror', (e) => {
@@ -205,9 +217,9 @@ async function transcodeFullKTX2(fileBuffer) {
     // 1. LOAD TEXTURE
     try {
       const data = new Uint8Array(fileBuffer);
-      texture = new m.ktxTexture(data);
+      texture = new m.ktxTexture2(data);
     } catch (e) {
-      throw new Error(`Failed to create ktxTexture: ${e.message}`);
+      throw new Error(`Failed to create ktxTexture2: ${e.message}`);
     }
     
     // 2. CHECK TRANSCODING NEEDS
@@ -324,8 +336,28 @@ async function transcodeFullKTX2(fileBuffer) {
     let wgpuFormat, blockWidth, blockHeight, bytesPerBlock;
     let transcodedLevels = null;
 
+    // adapter = await navigator.gpu.requestAdapter({
+    //   powerPreference: "high-performance",
+    //   forceFallbackAdapter: false,
+    // });
+    // device = await adapter.requestDevice({
+    //   requiredFeatures: ["texture-compression-etc2"]
+    // });
+
+    const nativeSupported = adapter.features.has("texture-compression-etc2");
+
+    const isETC2 =
+      header.vkFormat === 152 ||    // VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK
+      header.vkFormat === 153 ||    // VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK
+      header.vkFormat === 147 ||    // ETC2 formats RGB
+      header.vkFormat === 148 ||
+      header.vkFormat === 149;
+    const needsTranscode =
+      (isBasisFormat && header.vkFormat === 0) ||     // ETC1S, UASTC
+      (isETC2 && !nativeSupported);                   // ETC2 unsupported → transcode
+
     // Special case: Basis Universal formats use VK_FORMAT_UNDEFINED (0)
-    if (isBasisFormat && header.vkFormat === 0) {
+    if (needsTranscode) {
       // DFD descriptor tells us if it's ETC1S or UASTC
       let basisFormatName = 'Basis Universal';
       if (dfd && dfd.length > 0) {
@@ -335,7 +367,7 @@ async function transcodeFullKTX2(fileBuffer) {
       
       stat.textContent = `Loading ${file.name}... initializing transcoder for ${basisFormatName}`;
       meta.textContent = 'Initializing Basis Universal...';
-      
+
       try {
         await window.initLibKTX();
         
@@ -384,9 +416,12 @@ async function transcodeFullKTX2(fileBuffer) {
     });
     srcView = srcTex.createView();
 
+    const mipCount = transcodedLevels ? transcodedLevels.length : levels.length;
+
+
     // Upload mip levels
-    for (let i = 0; i < levels.length; i++) {
-      const lvl = levels[i];
+    for (let i = 0; i < mipCount; i++) {
+      const lvl = transcodedLevels ? transcodedLevels[i] : levels[i];//= levels[i];
       
       // Use transcoded data if available, otherwise original
       let raw = transcodedLevels 

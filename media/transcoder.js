@@ -36,6 +36,96 @@ async function initLibKTX() {
   }
 }
 
+// returns { instance: wasmExports, memory, createViews }
+async function instantiateUASTCTranscoder(wasmUrl, nBlocks /* number of 4x4 blocks to plan for */) {
+  // 16 bytes per block for UASTC -> ASTC/BC7; ensure enough pages (+1 reserved page)
+  const bytesNeeded = nBlocks * 16;
+  const texMemoryPages = (bytesNeeded + 65535) >> 16; // pages for compressed data
+  // +1 reserved page for WASM internal use
+  const memory = new WebAssembly.Memory({ initial: texMemoryPages + 1 });
+
+  // Create the initial view into memory where UASTC blocks will be placed.
+  // The guide reserves the 0th page, data starts at offset 65536.
+  function makeViews() {
+    const base = 65536;
+    const compressedBytes = nBlocks * 16;
+    const compressedView = new Uint8Array(memory.buffer, base, compressedBytes);
+    return { compressedView, memoryBase: base, compressedBytes };
+  }
+
+  const resp = await fetch(wasmUrl);
+  const bytes = await resp.arrayBuffer();
+  const module = await WebAssembly.instantiate(bytes, { env: { memory } });
+  const instance = module.instance.exports;
+
+  // If the transcoder needs other imports (like table, abort), adapt as needed.
+  return { instance, memory, makeViews };
+}
+
+// instance = wasmExports from instantiateUASTCTranscoder
+// makeViews() returns { compressedView, memoryBase, compressedBytes }
+async function transcodeUASTCToBC7(wasmUrl, uastcBlocks, width, height) {
+  const nBlocks = ((width + 3) >> 2) * ((height + 3) >> 2);
+  const { instance, memory, makeViews } = await instantiateUASTCTranscoder(wasmUrl, nBlocks);
+  let { compressedView } = makeViews();
+
+  // copy raw UASTC (each block 16 bytes) into compressed area
+  if (uastcBlocks.byteLength !== nBlocks * 16) {
+    // If KTX2 stores blocks contiguous and smaller, adjust accordingly.
+    // But generally uastcBlocks.length should equal nBlocks*16
+    console.warn('uastcBlocks length mismatch', uastcBlocks.byteLength, nBlocks * 16);
+  }
+  compressedView.set(uastcBlocks.subarray(0, nBlocks * 16));
+
+  // call transcode(numBlocks) — Khronos transcoders usually expose `transcode` or `transcode_blocks`
+  // The exact exported function name depends on the WASM build. Check instance exports.
+  if (typeof instance.transcode !== 'function') {
+    throw new Error('WASM transcoder has no transcode() export; inspect instance.exports');
+  }
+
+  const ret = instance.transcode(nBlocks); // returns 0 on success per guide
+  if (ret !== 0) throw new Error('Transcode returned error ' + ret);
+
+  // After success, compressedView now contains BC7 blocks (16 bytes per block)
+  // Return a copy so we can free or re-use WASM memory
+  return new Uint8Array(compressedView);
+}
+
+// Decode to RGBA8 using the Khronos decoder
+async function decodeUASTCToRGBA(wasmUrl, uastcBlocks, width, height) {
+  const xBlocks = (width + 3) >> 2;
+  const yBlocks = (height + 3) >> 2;
+  const compressedByteLength = xBlocks * yBlocks * 16;
+  const uncompressedByteLength = width * yBlocks * 4 * 4; // padded rows to multiple-of-4 height
+  const totalByteLength = compressedByteLength + uncompressedByteLength;
+  const texMemoryPages = (totalByteLength + 65535) >> 16;
+
+  const memory = new WebAssembly.Memory({ initial: texMemoryPages + 1 });
+  const base = 65536;
+  const compressedView = new Uint8Array(memory.buffer, base, compressedByteLength);
+  const decodedView = new Uint8Array(memory.buffer, base + compressedByteLength, uncompressedByteLength);
+
+  // copy compressed blocks
+  compressedView.set(uastcBlocks.subarray(0, compressedByteLength));
+
+  // instantiate wasm with that memory
+  const resp = await fetch(wasmUrl);
+  const module = await WebAssembly.instantiate(await resp.arrayBuffer(), { env: { memory } });
+  const instance = module.instance.exports;
+
+  // exported function is usually decode(width, height)
+  if (typeof instance.decode !== 'function') throw new Error('Decoder has no decode(width,height) export');
+
+  const r = instance.decode(width, height);
+  if (r !== 0) throw new Error('Decode failed: ' + r);
+
+  // decodedView now contains width*height*4 bytes in RGBA8 (row-packed)
+  // Note: some decoders pad rows to multiple-of-4 height - your `decodedView` already accounts for yBlocks.
+  // Create a copy to detach from WASM Memory
+  return new Uint8Array(decodedView);
+}
+
+
 /**
  * Transcode entire KTX2 file (handles Basis Universal supercompression)
  */
@@ -121,6 +211,7 @@ const NATIVE_BC_FORMATS = {
   141: 'bc5-rg-unorm', 142: 'bc5-rg-snorm',
   143: 'bc6h-rgb-ufloat', 144: 'bc6h-rgb-float',
   145: 'bc7-rgba-unorm', 146: 'bc7-rgba-unorm-srgb',
+  //152: 'etc2-rgba8unorm', 153: 'etc2-rgba8unorm-srgb',
 };
 
 function checkFormatRequirements(vkFormat) {
