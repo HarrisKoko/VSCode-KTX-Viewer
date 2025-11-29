@@ -2,12 +2,15 @@
 
 // TEXTURED SHADER (for displaying images/textures with tone mapping)
 
-
 struct Params {
   exposureEV: f32,
   exposureMul: f32,
   width: f32,
-  height: f32
+  height: f32,
+  channelR: f32,
+  channelG: f32,
+  channelB: f32,
+  channelA: f32
 }
 
 @group(0) @binding(0) var<uniform> U : Params;
@@ -39,9 +42,22 @@ fn aces_tonemap(x: vec3f) -> vec3f {
 }
 
 @fragment fn fs_textured(@location(0) uv: vec2f) -> @location(0) vec4f {
-  let c = textureSample(tex0, samp, uv).rgb;
-  let exposed = c * U.exposureMul;
-  let ldr = aces_tonemap(exposed);
+  let raw = textureSample(tex0, samp, uv);
+  
+  // Apply channel multipliers (colored)
+  var c = vec3f(
+    raw.r * U.channelR,
+    raw.g * U.channelG,
+    raw.b * U.channelB
+  );
+  
+  // Alpha shows as grayscale, added to all channels
+  c += vec3f(raw.a * U.channelA);
+  
+  // Apply exposure
+  c *= U.exposureMul;
+  
+  let ldr = aces_tonemap(c);
   return vec4f(ldr, 1.0);
 }
 

@@ -1,6 +1,37 @@
 // File for parsing KTX2 files
 // | Identifier | Header | Level Index | DFD | KVD | SGD | Mip Level Array |
 
+// Supercompression scheme constants
+const SUPERCOMPRESSION_NONE = 0;
+const SUPERCOMPRESSION_BASIS_LZ = 1;
+const SUPERCOMPRESSION_ZSTD = 2;
+const SUPERCOMPRESSION_ZLIB = 3;
+
+// Load fzstd library for Zstandard decompression
+let fzstdLoaded = false;
+let fzstdDecompress = null;
+
+async function loadFzstd() {
+  if (fzstdLoaded) return;
+  
+  // Load fzstd from CDN
+  const script = document.createElement('script');
+  script.src = 'https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.js';
+  
+  await new Promise((resolve, reject) => {
+    script.onload = resolve;
+    script.onerror = () => reject(new Error('Failed to load fzstd library'));
+    document.head.appendChild(script);
+  });
+  
+  if (typeof fzstd !== 'undefined') {
+    fzstdDecompress = fzstd.decompress;
+    fzstdLoaded = true;
+  } else {
+    throw new Error('fzstd library not available after loading');
+  }
+}
+
 async function parseKTX2(arrayBuffer) {
   const dv = new DataView(arrayBuffer);
 
@@ -65,6 +96,38 @@ async function parseKTX2(arrayBuffer) {
     kvd = parseKVD(dv, index.kvdByteOffset, index.kvdByteLength);
   }
 
+  // Handle supercompression - decompress level data if needed
+  if (header.supercompressionScheme === SUPERCOMPRESSION_ZSTD) {
+    await loadFzstd();
+    
+    // Decompress each mip level
+    for (let i = 0; i < levels.length; i++) {
+      const level = levels[i];
+      const compressedData = new Uint8Array(arrayBuffer, level.byteOffset, level.byteLength);
+      
+      try {
+        const decompressedData = fzstdDecompress(compressedData);
+        
+        // Store decompressed data - we need to keep it accessible
+        level.decompressedData = decompressedData;
+        level.isDecompressed = true;
+        
+        // Verify size matches expected
+        if (decompressedData.length !== level.uncompressedByteLength) {
+          console.warn(`Level ${i}: Decompressed size ${decompressedData.length} != expected ${level.uncompressedByteLength}`);
+        }
+      } catch (e) {
+        throw new Error(`Failed to decompress level ${i}: ${e.message}`);
+      }
+    }
+  } else if (header.supercompressionScheme === SUPERCOMPRESSION_BASIS_LZ) {
+    throw new Error('BasisLZ supercompression not yet supported. Use Zstd or uncompressed KTX2.');
+  } else if (header.supercompressionScheme === SUPERCOMPRESSION_ZLIB) {
+    throw new Error('Zlib supercompression not yet supported. Use Zstd or uncompressed KTX2.');
+  } else if (header.supercompressionScheme !== SUPERCOMPRESSION_NONE) {
+    throw new Error(`Unknown supercompression scheme: ${header.supercompressionScheme}`);
+  }
+
   return { header, index, levels, dfd, kvd };
 }
 
@@ -117,8 +180,11 @@ function parseKVD(dv, baseOffset, length) {
   return kv;
 }
 
-// Mip level accessor
+// Mip level accessor - returns decompressed data if available
 function getLevelData(arrayBuffer, level) {
+  if (level.isDecompressed && level.decompressedData) {
+    return level.decompressedData;
+  }
   return new Uint8Array(arrayBuffer, level.byteOffset, level.byteLength);
 }
 
@@ -172,10 +238,28 @@ function getFormatName(vkFormat) {
   return names[vkFormat] || `VK Format ${vkFormat}`;
 }
 
+// Get supercompression scheme name
+function getSupercompressionName(scheme) {
+  const names = {
+    0: 'None',
+    1: 'BasisLZ',
+    2: 'Zstandard',
+    3: 'Zlib',
+  };
+  return names[scheme] || `Unknown (${scheme})`;
+}
+
 // Expose functions
 window.parseKTX2 = parseKTX2;
 window.vkFormatToWebGPU = vkFormatToWebGPU;
 window.getFormatName = getFormatName;
+window.getSupercompressionName = getSupercompressionName;
 window.parseDFD = parseDFD;
 window.parseKVD = parseKVD;
 window.getLevelData = getLevelData;
+
+// Export constants
+window.SUPERCOMPRESSION_NONE = SUPERCOMPRESSION_NONE;
+window.SUPERCOMPRESSION_BASIS_LZ = SUPERCOMPRESSION_BASIS_LZ;
+window.SUPERCOMPRESSION_ZSTD = SUPERCOMPRESSION_ZSTD;
+window.SUPERCOMPRESSION_ZLIB = SUPERCOMPRESSION_ZLIB;
