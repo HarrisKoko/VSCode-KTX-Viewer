@@ -1,4 +1,4 @@
-// main.js — JPG/PNG/WebP renderer + KTX2 (BC1-BC7) loader using WebGPU
+// main.js — JPG/PNG/WebP renderer + KTX2 (BC1-BC7) loader using WebGPU + glTF validation
 
 // Minimal logger to the on-screen <div id="log">
 const log = (msg) => {
@@ -87,7 +87,7 @@ try {
 
   const format = navigator.gpu.getPreferredCanvasFormat();
 
-  // Simple UI
+  // Simple UI - UPDATED with validation button
   const ui = document.createElement('div');
   ui.style.position = 'absolute';
   ui.style.right = '12px';
@@ -104,7 +104,19 @@ try {
       <span id="evv">0</span>
     </div>
     <div>
-      <input id="file" type="file" accept="image/png, image/jpeg, image/webp, .ktx2">
+      <input id="file" type="file" accept="image/png, image/jpeg, image/webp, .ktx2, .gltf, .glb">
+    </div>
+    <div style="margin-top:6px;">
+      <button id="validate-btn" style="
+        background: #0e639c;
+        color: white;
+        border: none;
+        padding: 6px 12px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        display: none;
+      ">Validate glTF</button>
     </div>
     <div id="stat" style="margin-top:6px; opacity:.9;"></div>
     <div id="meta" style="margin-top:6px; opacity:.7; font-size:10px;"></div>
@@ -117,12 +129,21 @@ try {
   const fileInp = document.getElementById('file');
   const stat    = document.getElementById('stat');
   const meta    = document.getElementById('meta');
+  const validateBtn = document.getElementById('validate-btn');
 
   let exposureEV = 0;
-  evInput.oninput = () => {
+    // Use addEventListener instead of inline handlers (CSP compliant)
+  evInput.addEventListener('input', () => {
     exposureEV = parseFloat(evInput.value);
     evVal.textContent = evInput.value;
-  };
+  });
+
+  // Validation button click handler (CSP compliant)
+  validateBtn.addEventListener('click', () => {
+    if (window.validateCurrentGltf) {
+      window.validateCurrentGltf();
+    }
+  });
 
   // Swapchain configuration
   let lastW = 0, lastH = 0;
@@ -284,14 +305,32 @@ try {
     if (texPipeline) texBindGroup = makeTexBindGroup();
   }
 
-  // Pick the right loader
+  // File input handler - UPDATED
   fileInp.addEventListener('change', async () => {
     const f = fileInp.files?.[0];
     if (!f) return;
+    
+    const fileName = f.name.toLowerCase();
+    
     try {
-      if (f.name.toLowerCase().endsWith('.ktx2')) {
+      // Check if it's a glTF file
+      if (fileName.endsWith('.gltf') || fileName.endsWith('.glb')) {
+        // Store for validation
+        window.currentGltfFile = f;
+        validateBtn.style.display = 'block';
+        
+        stat.textContent = `Loaded ${f.name} - Click "Validate glTF" to check`;
+        meta.textContent = 'glTF file detected. Use validation button to analyze.';
+        
+        // Note: We're not rendering glTF yet, just enabling validation
+        // You could add glTF rendering here in the future
+      } else if (fileName.endsWith('.ktx2')) {
+        window.currentGltfFile = null;
+        validateBtn.style.display = 'none';
         await loadKTX2_ToTexture(f);
       } else {
+        window.currentGltfFile = null;
+        validateBtn.style.display = 'none';
         await loadImageToTexture(f);
       }
     } catch (e) {
@@ -301,10 +340,9 @@ try {
     }
   });
 
-// Load WGSL shader code from external file
-// Note: shaderUri is injected by extension.ts
-const shaderResponse = await fetch(window.shaderUri);
-const shaderCode = await shaderResponse.text();
+  // Load WGSL shader code from external file
+  const shaderResponse = await fetch(window.shaderUri);
+  const shaderCode = await shaderResponse.text();
 
   async function compileModule(code, label) {
     const mod = device.createShaderModule({ code, label });
