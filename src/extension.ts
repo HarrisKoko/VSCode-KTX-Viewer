@@ -1,6 +1,17 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
+
+let validator: any;
+try {
+  validator = require('gltf-validator');
+} catch (e) {
+  console.error('gltf-validator not available');
+}
 
 export function activate(context: vscode.ExtensionContext) {
+  console.log('KTX2HDR Extension is now active!');
+
   context.subscriptions.push(
     vscode.commands.registerCommand('ktx2hdr.openWebgpuDemo', () => {
       const panel = vscode.window.createWebviewPanel(
@@ -23,6 +34,19 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.Uri.joinPath(context.extensionUri, 'media', 'shaders.wgsl')
       );
 
+      // Handle messages from the webview
+      panel.webview.onDidReceiveMessage(
+        async (message) => {
+          switch (message.command) {
+            case 'validateGltf':
+              await handleValidateGltf(panel, message.fileData, message.fileName, message.fileDir);
+              break;
+          }
+        },
+        undefined,
+        context.subscriptions
+      );
+
       const nonce = getNonce();
       panel.webview.html = /* html */`
         <!DOCTYPE html>
@@ -39,16 +63,223 @@ export function activate(context: vscode.ExtensionContext) {
             html, body, #wrap { height: 100%; margin: 0; background: #1e1e1e; }
             #log { position:absolute; top:8px; left:8px; font:12px/1.4 monospace; color:#ccc; }
             canvas { width: 100%; height: 100%; display: block; }
+            
+            /* Validation results overlay */
+            #validation-overlay {
+              display: none;
+              position: absolute;
+              top: 50%;
+              left: 50%;
+              transform: translate(-50%, -50%);
+              background: rgba(30, 30, 30, 0.98);
+              border: 1px solid #444;
+              border-radius: 8px;
+              padding: 20px;
+              max-width: 600px;
+              max-height: 80vh;
+              overflow-y: auto;
+              z-index: 1000;
+              box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            }
+            #validation-overlay.show { display: block; }
+            .validation-header {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 16px;
+              padding-bottom: 12px;
+              border-bottom: 1px solid #444;
+            }
+            .validation-close {
+              background: #444;
+              border: none;
+              color: #fff;
+              padding: 4px 12px;
+              border-radius: 4px;
+              cursor: pointer;
+              font-size: 14px;
+            }
+            .validation-close:hover { background: #555; }
+            .validation-status {
+              padding: 12px;
+              border-radius: 4px;
+              margin-bottom: 16px;
+              font-weight: 500;
+            }
+            .validation-status.valid { background: #0e4429; color: #3fb950; }
+            .validation-status.error { background: #490b0b; color: #f85149; }
+            .validation-status.warning { background: #4a3600; color: #d29922; }
+            .validation-issue {
+              background: rgba(255,255,255,0.05);
+              padding: 10px;
+              margin-bottom: 8px;
+              border-radius: 4px;
+              border-left: 3px solid;
+            }
+            .validation-issue.error { border-left-color: #f85149; }
+            .validation-issue.warning { border-left-color: #d29922; }
+            .validation-issue.info { border-left-color: #58a6ff; }
+            .validation-issue-header {
+              font-weight: 600;
+              margin-bottom: 4px;
+              color: #ccc;
+            }
+            .validation-issue-message {
+              font-size: 13px;
+              color: #aaa;
+              line-height: 1.4;
+            }
+            .validation-issue-pointer {
+              font-size: 11px;
+              color: #888;
+              margin-top: 4px;
+              font-family: monospace;
+            }
           </style>
         </head>
         <body>
           <div id="wrap">
             <canvas id="gfx"></canvas>
             <div id="log">Initializing…</div>
+            
+            <!-- Validation Results Overlay -->
+            <div id="validation-overlay">
+              <div class="validation-header">
+                <h3 style="margin:0; color:#ccc;">glTF Validation Results</h3>
+                <button class="validation-close" id="close-validation-btn">Close</button>
+              </div>
+              <div id="validation-content"></div>
+            </div>
           </div>
+          
           <script nonce="${nonce}">
-            // Inject shader URI as global variable
             window.shaderUri = '${shaderUri}';
+            
+            // VSCode API for messaging
+            const vscode = acquireVsCodeApi();
+            
+            // Store current file info for validation
+            window.currentGltfFile = null;
+
+            // Function to validate current glTF file
+            window.validateCurrentGltf = function() {
+              const file = window.currentGltfFile;
+              if (!file) {
+                alert('No glTF file loaded. Please load a .gltf or .glb file first.');
+                return;
+              }
+              
+              const reader = new FileReader();
+              reader.onload = function(e) {
+                const arrayBuffer = e.target.result;
+                const uint8Array = new Uint8Array(arrayBuffer);
+                const base64 = btoa(String.fromCharCode.apply(null, uint8Array));
+                
+                // Send to extension for validation
+                vscode.postMessage({
+                  command: 'validateGltf',
+                  fileData: base64,
+                  fileName: file.name,
+                  fileDir: '' // Will be empty for file input
+                });
+                
+                showValidationLoading();
+              };
+              reader.readAsArrayBuffer(file);
+            };
+            
+            // Handle validation results from extension
+            window.addEventListener('message', event => {
+              const message = event.data;
+              if (message.command === 'validationResults') {
+                displayValidationResults(message.results);
+              }
+            });
+            
+            function showValidationLoading() {
+              const overlay = document.getElementById('validation-overlay');
+              const content = document.getElementById('validation-content');
+              content.innerHTML = '<div style="text-align:center; padding:40px; color:#aaa;">Validating glTF file...</div>';
+              overlay.classList.add('show');
+            }
+            
+            function displayValidationResults(result) {
+              const overlay = document.getElementById('validation-overlay');
+              const content = document.getElementById('validation-content');
+              
+              const issues = result.issues?.messages || [];
+              const errorCount = issues.filter(i => i.severity === 0).length;
+              const warningCount = issues.filter(i => i.severity === 1).length;
+              
+              let statusClass = 'valid';
+              let statusText = '✓ Valid glTF';
+              if (errorCount > 0) {
+                statusClass = 'error';
+                statusText = \`✗ \${errorCount} Error\${errorCount > 1 ? 's' : ''} Found\`;
+              } else if (warningCount > 0) {
+                statusClass = 'warning';
+                statusText = \`⚠ \${warningCount} Warning\${warningCount > 1 ? 's' : ''}\`;
+              }
+              
+              let html = \`<div class="validation-status \${statusClass}">\${statusText}</div>\`;
+              
+              if (issues.length > 0) {
+                html += '<div style="margin-bottom:12px; color:#888; font-size:12px;">Issues:</div>';
+                
+                for (const issue of issues) {
+                  const severityName = ['error', 'warning', 'info', 'hint'][issue.severity] || 'info';
+                  const severityLabel = severityName.toUpperCase();
+                  
+                  html += \`
+                    <div class="validation-issue \${severityName}">
+                      <div class="validation-issue-header">[\${severityLabel}] \${issue.code || 'UNKNOWN'}</div>
+                      <div class="validation-issue-message">\${escapeHtml(issue.message)}</div>
+                      \${issue.pointer ? \`<div class="validation-issue-pointer">Location: \${issue.pointer}</div>\` : ''}
+                    </div>
+                  \`;
+                }
+              } else {
+                html += '<div style="color:#888; font-size:14px;">No issues found! This is a valid glTF file.</div>';
+              }
+              
+              // Add stats if available
+              if (result.info) {
+                html += '<div style="margin-top:20px; padding-top:16px; border-top:1px solid #444;">';
+                html += '<div style="color:#888; font-size:12px; margin-bottom:8px;">Asset Info:</div>';
+                html += '<div style="color:#aaa; font-size:13px; line-height:1.6;">';
+                if (result.info.version) html += \`Version: \${result.info.version}<br>\`;
+                if (result.info.generator) html += \`Generator: \${result.info.generator}<br>\`;
+                if (result.info.meshesCount !== undefined) html += \`Meshes: \${result.info.meshesCount}<br>\`;
+                if (result.info.materialsCount !== undefined) html += \`Materials: \${result.info.materialsCount}<br>\`;
+                if (result.info.texturesCount !== undefined) html += \`Textures: \${result.info.texturesCount}<br>\`;
+                html += '</div></div>';
+              }
+              
+              content.innerHTML = html;
+              overlay.classList.add('show');
+            }
+            
+            function closeValidation() {
+              document.getElementById('validation-overlay').classList.remove('show');
+            }
+            
+            function escapeHtml(text) {
+              const div = document.createElement('div');
+              div.textContent = text;
+              return div.innerHTML;
+            }
+
+            // Set up close button - NO inline handlers, CSP compliant
+            // Wait a bit for DOM to be ready
+            setTimeout(() => {
+              const closeBtn = document.getElementById('close-validation-btn');
+              if (closeBtn) {
+                closeBtn.addEventListener('click', closeValidation);
+                console.log('Close button event listener attached');
+              } else {
+                console.error('Close button not found!');
+              }
+            }, 100);
           </script>
           <script nonce="${nonce}" src="${readUri}"></script>
           <script nonce="${nonce}" type="module" src="${scriptUri}"></script>
@@ -57,6 +288,70 @@ export function activate(context: vscode.ExtensionContext) {
 
     })
   );
+}
+
+async function handleValidateGltf(
+  panel: vscode.WebviewPanel,
+  base64Data: string,
+  fileName: string,
+  fileDir: string
+) {
+  if (!validator) {
+    vscode.window.showErrorMessage('glTF Validator not installed');
+    return;
+  }
+
+  try {
+    console.log('Validating glTF file:', fileName);
+    
+    // Decode base64 to Uint8Array
+    const binaryString = Buffer.from(base64Data, 'base64');
+    const uint8Array = new Uint8Array(binaryString);
+
+    // Validate
+    const result = await validator.validateBytes(uint8Array, {
+      uri: fileName,
+      maxIssues: 0,
+      writeTimestamp: false,
+      externalResourceFunction: async (resourceUri: string) => {
+        // For file input, we can't load external resources
+        // In production, you'd need to handle this differently
+        console.log('External resource requested:', resourceUri);
+        throw new Error('External resources not supported for file input validation');
+      }
+    });
+
+    console.log('Validation complete:', result);
+
+    // Send results back to webview
+    panel.webview.postMessage({
+      command: 'validationResults',
+      results: result
+    });
+
+    // Also show notification
+    const issues = result.issues?.messages || [];
+    const errorCount = issues.filter((i: any) => i.severity === 0).length;
+    const warningCount = issues.filter((i: any) => i.severity === 1).length;
+
+    if (errorCount > 0) {
+      vscode.window.showErrorMessage(
+        `glTF Validation: ${errorCount} error(s), ${warningCount} warning(s)`
+      );
+    } else if (warningCount > 0) {
+      vscode.window.showWarningMessage(
+        `glTF Validation: ${warningCount} warning(s)`
+      );
+    } else {
+      vscode.window.showInformationMessage(
+        `✓ Valid glTF: ${fileName}`
+      );
+    }
+
+  } catch (error: any) {
+    console.error('Validation error:', error);
+    vscode.window.showErrorMessage(`Validation failed: ${error.message}`);
+  }
 }
 
 export function deactivate() {}
