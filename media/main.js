@@ -698,6 +698,7 @@ async function waitForKTXParser() {
     fileInp.addEventListener('change', async () => {
       const f = fileInp.files?.[0];
       if (!f) return;
+      const fileName = f.name.toLowerCase();
 
       try {
         if (fileName.endsWith('.gltf') || fileName.endsWith('.glb')) {
