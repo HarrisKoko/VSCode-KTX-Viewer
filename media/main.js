@@ -146,7 +146,12 @@ async function waitForKTXParser() {
 
     <div style="margin-top:8px; margin-bottom:8px;">
       <label style="display:block; font-size:12px;">Open file</label>
-      <input id="file" type="file" accept="image/png, image/jpeg, image/webp, .ktx2" style="width:100%" />
+      <input id="file" type="file" accept="image/png, image/jpeg, image/webp, .ktx2, .gltf, .glb" style="width:100%" />
+    </div>
+
+    <div id="gltf-controls" style="margin-top:8px; margin-bottom:12px; display:none; padding:8px; background:#1a1a1a; border-radius:4px; border:1px solid #333;">
+      <div style="font-size:12px; margin-bottom:6px; color:#8cf;">glTF File Detected</div>
+      <button id="validate-btn" style="width:100%; padding:6px 12px; background:#0e639c; color:white; border:none; border-radius:4px; cursor:pointer; font-family:monospace;">Validate glTF</button>
     </div>
 
     <div style="margin-top:8px; margin-bottom:8px;">
@@ -210,7 +215,7 @@ async function waitForKTXParser() {
       <div>Tips:</div>
       <ul style="padding-left:18px; margin-top:6px;">
         <li>Use Mip slider to inspect individual mip levels.</li>
-        <li>Check "Show only selected mip" to view it with exact texel-size sampling.</li>
+        <li>For glTF files, click "Validate" after loading.</li>
       </ul>
     </div>
 
@@ -291,6 +296,10 @@ async function waitForKTXParser() {
     const stat    = document.getElementById('stat');
     const meta    = document.getElementById('meta');
     const filterMode = document.getElementById('filterMode');
+
+    // glTF specific UI
+    const gltfControls = document.getElementById('gltf-controls');
+    const validateBtn = document.getElementById('validate-btn');
 
     const mipControls = document.getElementById('mip-controls');
     const mipSlider   = document.getElementById('mipSlider');
@@ -435,7 +444,16 @@ async function waitForKTXParser() {
       evVal.textContent = evInput.value;
     };
 
-    // Texture sampler (recreated when filter mode changes)
+    // glTF Validation Handler
+    validateBtn.onclick = () => {
+      if (window.validateCurrentGltf) {
+        window.validateCurrentGltf();
+      } else {
+        logApp('Validation logic not found.', 'error');
+      }
+    };
+
+    // Sampler setup
     function createSampler(mode) {
       if (mode === 'nearest') {
         return device.createSampler({ 
@@ -680,11 +698,28 @@ async function waitForKTXParser() {
     fileInp.addEventListener('change', async () => {
       const f = fileInp.files?.[0];
       if (!f) return;
+
       try {
-        if (f.name.toLowerCase().endsWith('.ktx2')) {
-          await loadKTX2_ToTexture(f);
+        if (fileName.endsWith('.gltf') || fileName.endsWith('.glb')) {
+          // --- glTF Handling ---
+          window.currentGltfFile = f;
+          gltfControls.style.display = 'block';
+          
+          stat.textContent = `Selected: ${f.name}`;
+          meta.textContent = 'glTF detected. Click Validate button to analyze.';
+          texInfo.style.display = 'none'; // Hide texture info panel
+          
+          logApp(`Selected glTF file: ${f.name}`, 'info');
         } else {
-          await loadImageToTexture(f);
+          // --- Texture Handling ---
+          window.currentGltfFile = null;
+          gltfControls.style.display = 'none';
+          
+          if (fileName.endsWith('.ktx2')) {
+            await loadKTX2_ToTexture(f);
+          } else {
+            await loadImageToTexture(f);
+          }
         }
       } catch (e) {
         console.error(e);
