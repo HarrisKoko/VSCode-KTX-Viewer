@@ -26,15 +26,36 @@ const log = (msg) => {
 };
 
 // App logger (appends to scrollable log with severity colors)
-const logApp = (msg, level = 'info') => {
+const logApp = (...args) => {
   const el = document.getElementById('appLog');
+  // Known log levels
+  const knownLevels = ["info", "success", "error", "warn"];
+
+  let msgParts = [];
+  let level = "info"; // default
+
+  // Case 1: second argument is a level → keep old behavior
+  if (args.length >= 2 && typeof args[1] === "string" && knownLevels.includes(args[1])) {
+    msgParts = [args[0]];
+    level = args[1];
+  }
+  // Case 2: treat all args as message parts
+  else {
+    msgParts = args;
+  }
+
+  // Convert objects → pretty JSON
+  const msg = msgParts
+    .map(a => (typeof a === "object" ? JSON.stringify(a, null, 2) : String(a)))
+    .join(" ");
+
   if (el) {
     el.style.display = 'block';
     const entry = document.createElement('div');
     entry.style.marginBottom = '4px';
     entry.style.paddingBottom = '4px';
     entry.style.borderBottom = '1px solid #222';
-    
+
     // Color based on log level
     const colors = {
       error: '#ff6666',
@@ -45,7 +66,8 @@ const logApp = (msg, level = 'info') => {
     entry.style.color = colors[level] || colors.info;
     
     const timestamp = new Date().toLocaleTimeString();
-    entry.textContent = `[${timestamp}] ${String(msg)}`;
+    entry.textContent = `[${timestamp}] ${msg}`;
+
     el.appendChild(entry);
     // Auto-scroll to bottom
     el.scrollTop = el.scrollHeight;
