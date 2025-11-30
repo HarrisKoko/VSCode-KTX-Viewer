@@ -1,6 +1,62 @@
 // File for parsing KTX2 files
 // | Identifier | Header | Level Index | DFD | KVD | SGD | Mip Level Array |
 
+
+// App logger (appends to scrollable log with severity colors)
+const logApp = (...args) => {
+  const el = document.getElementById('appLog');
+  // Known log levels
+  const knownLevels = ["info", "success", "error", "warn"];
+
+  let msgParts = [];
+  let level = "info"; // default
+
+  // Case 1: second argument is a level → keep old behavior
+  if (args.length >= 2 && typeof args[1] === "string" && knownLevels.includes(args[1])) {
+    msgParts = [args[0]];
+    level = args[1];
+  }
+  // Case 2: treat all args as message parts
+  else {
+    msgParts = args;
+  }
+
+  // Convert objects → pretty JSON
+  const msg = msgParts
+    .map(a => (typeof a === "object" ? JSON.stringify(a, null, 2) : String(a)))
+    .join(" ");
+
+  if (el) {
+    el.style.display = 'block';
+    const entry = document.createElement('div');
+    entry.style.marginBottom = '4px';
+    entry.style.paddingBottom = '4px';
+    entry.style.borderBottom = '1px solid #222';
+
+    // Color based on log level
+    const colors = {
+      error: '#ff6666',
+      warn: '#ffaa44',
+      success: '#66ff66',
+      info: '#aaa'
+    };
+    entry.style.color = colors[level] || colors.info;
+    
+    const timestamp = new Date().toLocaleTimeString();
+    entry.textContent = `[${timestamp}] ${msg}`;
+
+    el.appendChild(entry);
+    // Auto-scroll to bottom
+    el.scrollTop = el.scrollHeight;
+  }
+  
+  // Also log to console
+  if (level === 'error') console.error(msg);
+  else if (level === 'warn') console.warn(msg);
+  else console.log(msg);
+};
+
+
 // Supercompression scheme constants
 const SUPERCOMPRESSION_NONE = 0;
 const SUPERCOMPRESSION_BASIS_LZ = 1;
@@ -31,6 +87,70 @@ async function loadFzstd() {
     throw new Error('fzstd library not available after loading');
   }
 }
+
+// -----------------------------------------------------------------------------
+// Basis Universal Transcoder Loader — FIXED
+// -----------------------------------------------------------------------------
+let basisModulePromise = null;
+let BasisModule = null;
+
+async function loadBasisModule() {
+  if (basisModulePromise) return basisModulePromise;
+
+  basisModulePromise = new Promise(async (resolve, reject) => {
+    try {
+      // 1. Load JS file by script tag
+      await loadScript("media/basisu/basis_transcoder.js");
+
+      // Ensure global BasisModule function exists
+      if (typeof BasisModule !== "function") {
+        return reject(new Error("basis_transcoder.js did not define BasisModule"));
+      }
+
+      // 2. Load WASM binary
+      const wasmBinary = await fetch("media/basisu/basis_transcoder.wasm")
+        .then(r => r.arrayBuffer());
+
+      // 3. Initialize module
+      BasisModule({
+        wasmBinary
+      }).then(mod => {
+        BasisModule = mod;
+        resolve(mod);
+      }).catch(reject);
+    } catch (err) {
+      reject(err);
+    }
+  });
+
+  return basisModulePromise;
+}
+
+function loadScript(url) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement("script");
+    el.src = url;
+    el.onload = resolve;
+    el.onerror = reject;
+    document.head.appendChild(el);
+  });
+}
+
+// -----------------------------------------------------------------------------
+// Helper for Basis files
+// -----------------------------------------------------------------------------
+function makeBasisFile(u8) {
+  return new BasisModule.BasisFile(u8);
+}
+
+// Choose GPU target (fixed)
+function getBasisTargetFormatForGPU(device) {
+  if (device.features.has("texture-compression-bc")) {
+    return BasisModule.TranscodeTarget.BC7; // best choice for UASTC
+  }
+  return BasisModule.TranscodeTarget.RGBA32;
+}
+
 
 async function parseKTX2(arrayBuffer) {
   const dv = new DataView(arrayBuffer);
@@ -120,8 +240,35 @@ async function parseKTX2(arrayBuffer) {
         throw new Error(`Failed to decompress level ${i}: ${e.message}`);
       }
     }
-  } else if (header.supercompressionScheme === SUPERCOMPRESSION_BASIS_LZ) {
-    throw new Error('BasisLZ supercompression not yet supported. Use Zstd or uncompressed KTX2.');
+  } else if (header.supercompressionScheme === SUPERCOMPRESSION_BASIS_LZ) { // This means ETC1S or UASTC
+    logApp("Detected BASIS-LZ texture (ETC1S or UASTC)");
+
+    // Load transcoder
+    await loadBasisModule();
+
+    const basisFile = makeBasisFile(
+      new Uint8Array(arrayBuffer, levels[0].byteOffset, levels[0].byteLength)
+    );
+
+    if (!basisFile.isValid()) {
+      throw new Error("Invalid Basis file inside KTX2");
+    }
+
+    const imageCount = basisFile.getNumImages();
+    if (imageCount === 0) throw new Error("Basis file has no images");
+
+    const format = getBasisTargetFormatForGPU(device);
+
+    const bytes = basisFile.transcodeImage(
+      format,
+      0, // image index
+      0  // level index
+    );
+
+    levels[0].isDecompressed = true;
+    levels[0].decompressedData = bytes;
+
+    basisFile.close();
   } else if (header.supercompressionScheme === SUPERCOMPRESSION_ZLIB) {
     throw new Error('Zlib supercompression not yet supported. Use Zstd or uncompressed KTX2.');
   } else if (header.supercompressionScheme !== SUPERCOMPRESSION_NONE) {

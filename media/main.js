@@ -818,13 +818,9 @@ const m = await initLibKTX();
           // This parses the global codebooks correctly
           transcodedLevels = await window.transcodeFullKTX2(buf);
           
-          logApp("Transcoding success:", transcodedLevels);
-
           logApp("TRANSCODE CHECK", {
               format: transcodedLevels[0].format,
               byteLength: transcodedLevels[0].data.length,
-              width: transcodedLevels[0].width,
-              height: transcodedLevels[0].height,
           });
 
           
