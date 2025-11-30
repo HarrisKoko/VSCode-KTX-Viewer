@@ -285,24 +285,31 @@ async function waitForKTXParser() {
       throw new Error('No GPU adapter');
     }
 
+    // --- Log supported compressed texture formats ---
+    const supportedFeatures = [];
+
+    if (adapter.features.has("texture-compression-bc"))
+      supportedFeatures.push("texture-compression-bc");
+
+    if (adapter.features.has("texture-compression-etc2"))
+      supportedFeatures.push("texture-compression-etc2");
+
+    if (adapter.features.has("texture-compression-astc"))
+      supportedFeatures.push("texture-compression-astc");
+    // ------------------------------------------------
+
     const bcSupported = adapter.features.has('texture-compression-bc');
     const device = await adapter.requestDevice({
-      requiredFeatures: bcSupported ? ['texture-compression-bc'] : []
+      requiredFeatures: supportedFeatures// bcSupported ? ['texture-compression-bc'] : []
     });
+    if (adapter.features.has("texture-compression-etc2")) {
+      logApp("ETC2 texture compression is supported natively.", 'success');
+    }
+    if (device.features.has("texture-compression-etc2")) {
+      logApp("ETC2 texture compression is supported natively on device.", 'success');
+    }
 
-    // --- Log supported compressed texture formats ---
-    const requiredFeatures = [];
-
-    // Check for each compression type:
-    if (adapter.features.has('texture-compression-bc'))
-      requiredFeatures.push('texture-compression-bc');
-
-    if (adapter.features.has('texture-compression-etc2'))
-      requiredFeatures.push('texture-compression-etc2');
-
-    if (adapter.features.has('texture-compression-astc'))
-      requiredFeatures.push('texture-compression-astc');
-    // ------------------------------------------------
+  
 
     device.addEventListener?.('uncapturederror', (e) => {
       console.error('WebGPU uncaptured error:', e.error || e);
@@ -728,10 +735,10 @@ const m = await initLibKTX();
         header.vkFormat === 148 ||
         header.vkFormat === 149;
 
-      if (!formatInfo && !isETC2 && !(isBasisFormat && header.vkFormat === 0)) {
-        logApp(`Unsupported vkFormat ${header.vkFormat}. Supported: BC1-BC7, ETC2, BasisUniversal.`, 'error');
-        throw new Error(`Unsupported vkFormat ${header.vkFormat}.`);
-      }
+      // if (!formatInfo && !isETC2 && !(isBasisFormat && header.vkFormat === 0)) {
+      //   logApp(`Unsupported vkFormat ${header.vkFormat}. Supported: BC1-BC7, ETC2, BasisUniversal.`, 'error');
+      //   throw new Error(`Unsupported vkFormat ${header.vkFormat}.`);
+      // }
       let wgpuFormat, blockWidth, blockHeight, bytesPerBlock;
       // let { wgpuFormat, blockWidth, blockHeight, bytesPerBlock } = formatInfo;
       const formatName = window.getFormatName ? window.getFormatName(header.vkFormat) : `vkFormat ${header.vkFormat}`;
@@ -739,12 +746,32 @@ const m = await initLibKTX();
       let transcodedLevels = null;
 
       const nativeSupported = adapter.features.has("texture-compression-etc2");
+      // logApp("native ETC2 support:", nativeSupported);
       const needsTranscode =
         (isBasisFormat && header.vkFormat === 0) ||     // ETC1S, UASTC
         (isETC2 && !nativeSupported);                   // ETC2 unsupported → transcode
 
+      if (isETC2 && nativeSupported) {
+        wgpuFormat = "etc2-rgba8unorm";   // or srgb variant
+        blockWidth = 4;
+        blockHeight = 4;
+        bytesPerBlock = 16;               // ETC2 is 64 bits per block = 8 bytes (RGB) or 16 bytes (RGBA)
+        
+        // ETC2_RGBA8 = 16 bytes per block
+        if (header.vkFormat === 152 || header.vkFormat === 153) {
+          bytesPerBlock = 16; // ETC2 RGBA8
+        } else {
+          bytesPerBlock = 8;  // ETC2 RGB formats
+        }
+
+        // mips: no transcoding, use raw level data
+        transcodedLevels = null;
+
+        logApp("ETC2 native path:", { wgpuFormat, bytesPerBlock });
+      }
+
       // Special case: Basis Universal formats use VK_FORMAT_UNDEFINED (0)
-      if (needsTranscode) {
+      else if (needsTranscode) {
         // DFD descriptor tells us if it's ETC1S or UASTC
         let basisFormatName = 'Basis Universal';
         if (dfd && dfd.length > 0) {
@@ -769,11 +796,19 @@ const m = await initLibKTX();
           // This parses the global codebooks correctly
           transcodedLevels = await window.transcodeFullKTX2(buf);
           
-          console.log("Transcoding success:", transcodedLevels);
+          logApp("Transcoding success:", transcodedLevels);
+
+          logApp("TRANSCODE CHECK", {
+              format: transcodedLevels[0].format,
+              byteLength: transcodedLevels[0].data.length,
+              width: transcodedLevels[0].width,
+              height: transcodedLevels[0].height,
+          });
+
           
         } catch (e) {
           console.error(e);
-          log('Transcoding failed: ' + e.message);
+          logApp('Transcoding failed: ' + e.message);
           stat.textContent = 'Error: ' + e.message;
           throw e;
         }
