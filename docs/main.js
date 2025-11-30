@@ -343,7 +343,14 @@ async function waitForKTXParser() {
         lastW = w; lastH = h;
       }
     }
-    new ResizeObserver(configureIfNeeded).observe(document.getElementById('canvas-container'));
+    const canvasContainer = document.getElementById('canvas-container');
+    if (canvasContainer) {
+      new ResizeObserver(configureIfNeeded).observe(canvasContainer);
+    } else {
+      // Fallback for standalone web version - observe window resize
+      window.addEventListener('resize', configureIfNeeded);
+      configureIfNeeded();
+    }
     configureIfNeeded();
 
     // Uniform buffer for parameters
