@@ -330,6 +330,9 @@ async function waitForKTXParser() {
     if (device.features.has("texture-compression-etc2")) {
       logApp("ETC2 texture compression is supported natively on device.", 'success');
     }
+    device.addEventListener("uncapturederror", (event) => {
+      console.error("WEBGPU ERROR:", event.error);
+    });
 
   
 
@@ -794,34 +797,39 @@ const m = await initLibKTX();
 
       // Special case: Basis Universal formats use VK_FORMAT_UNDEFINED (0)
       else if (needsTranscode) {
-        // DFD descriptor tells us if it's ETC1S or UASTC
         let basisFormatName = 'Basis Universal';
-        if (dfd && dfd.length > 0) {
-          if (dfd[0].colorModel === 163) basisFormatName = 'ETC1S';
-          else if (dfd[0].colorModel === 166) basisFormatName = 'UASTC';
-        }
-        stat.textContent = `Loading ${file.name}... initializing transcoder for ${basisFormatName}`;
-        meta.textContent = 'Initializing Basis Universal...';
+  if (dfd && dfd.length > 0) {
+    if (dfd[0].colorModel === 163) basisFormatName = 'ETC1S';
+    else if (dfd[0].colorModel === 166 || dfd[0].colorModel === 152) basisFormatName = 'UASTC';
+  }
 
-        try {
-          await window.initLibKTX();
-          
-          // Settings for BC7
-          wgpuFormat = 'bc7-rgba-unorm';
-          blockWidth = 4;
-          blockHeight = 4;
-          bytesPerBlock = 16;
-          
-          stat.textContent = `Transcoding ${levels.length} mips...`;
+  stat.textContent = `Loading ${file.name}... initializing transcoder for ${basisFormatName}`;
+  meta.textContent = 'Initializing Basis Universal...';
 
-          // FIXED: Transcode the WHOLE file at once
-          // This parses the global codebooks correctly
-          transcodedLevels = await window.transcodeFullKTX2(buf);
-          
-          logApp("TRANSCODE CHECK", {
-              format: transcodedLevels[0].format,
-              byteLength: transcodedLevels[0].data.length,
-          });
+  try {
+    // Prefer your existing convenience wrapper if present (initLibKTX)
+    if (window.initLibKTX && typeof window.initLibKTX === 'function') {
+      await window.initLibKTX(); // preserves earlier behavior
+    }
+    // Then transcode
+    transcodedLevels = await transcodeBasisKTX2(buf, header, levels, dfd, device);
+
+    // If transcode returned numeric 'format' codes (Basis targets), map to WebGPU format strings:
+    // We'll prefer BC7 if target was BC7, etc. You may already have vkFormatToWebGPU or similar.
+    // For simplicity, set wgpuFormat to bc7 if device supports BC, otherwise use rgba8unorm.
+    if (device.features.has('texture-compression-bc')) {
+      wgpuFormat = 'bc7-rgba-unorm';
+      blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
+    } else {
+      // fallback: upload RGBA8 uncompressed
+      wgpuFormat = 'rgba8unorm';
+      blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
+      // Note: if using rgba8unorm ensure you use padRows() NOT padBlockRowsBC()
+    }
+
+    stat.textContent = `Transcoding ${transcodedLevels.length} levels...`;
+    console.log("Transcoding success:", transcodedLevels);
+  
 
           
         } catch (e) {
