@@ -197,15 +197,44 @@ async function waitForKTXParser() {
 
     logApp('WebGPU initialized successfully', 'success');
 
+    // --- FIX: Dynamic UI Injection ---
+    // If using window.sidebarTemplate, it might miss the new glTF controls.
+    // We check for them here and inject if missing to prevent "null" errors.
+    if (!document.getElementById('gltf-controls')) {
+      const fileInput = document.getElementById('file');
+      // Find a safe place to insert. We look for the file input's parent.
+      // If the template structure is totally different, we append to sidebar root.
+      const anchor = fileInput ? fileInput.parentNode : document.getElementById('sidebar');
+      
+      if (anchor) {
+        const div = document.createElement('div');
+        div.id = 'gltf-controls';
+        // Match the hardcoded styling
+        div.style.cssText = 'margin-top:8px; margin-bottom:12px; display:none; padding:8px; background:#1a1a1a; border-radius:4px; border:1px solid #333;';
+        div.innerHTML = `
+          <div style="font-size:12px; margin-bottom:6px; color:#8cf;">glTF File Detected</div>
+          <button id="validate-btn" style="width:100%; padding:6px 12px; background:#0e639c; color:white; border:none; border-radius:4px; cursor:pointer; font-family:monospace;">Validate glTF</button>
+        `;
+        // Insert after the anchor
+        if (fileInput) anchor.parentNode.insertBefore(div, anchor.nextSibling);
+        else anchor.appendChild(div);
+      }
+    }
+    // ---------------------------------
+
     const format = navigator.gpu.getPreferredCanvasFormat();
 
-    // UI refs (now inside sidebar)
+    // UI refs (now guaranteed to exist either via template or injection)
     const evInput = document.getElementById('ev');
     const evVal   = document.getElementById('evv');
     const fileInp = document.getElementById('file');
     const stat    = document.getElementById('stat');
     const meta    = document.getElementById('meta');
     const filterMode = document.getElementById('filterMode');
+
+    // glTF specific UI
+    const gltfControls = document.getElementById('gltf-controls');
+    const validateBtn = document.getElementById('validate-btn');
 
     const mipControls = document.getElementById('mip-controls');
     const mipSlider   = document.getElementById('mipSlider');
@@ -349,6 +378,17 @@ async function waitForKTXParser() {
       exposureEV = parseFloat(evInput.value);
       evVal.textContent = evInput.value;
     };
+
+    // glTF Validation Handler
+    if (validateBtn) {
+        validateBtn.onclick = () => {
+          if (window.validateCurrentGltf) {
+            window.validateCurrentGltf();
+          } else {
+            logApp('Validation logic not found.', 'error');
+          }
+        };
+    }
 
     // Texture sampler (recreated when filter mode changes)
     function createSampler(mode) {
@@ -595,11 +635,30 @@ async function waitForKTXParser() {
     fileInp.addEventListener('change', async () => {
       const f = fileInp.files?.[0];
       if (!f) return;
+      
+      const fileName = f.name.toLowerCase();
+
       try {
-        if (f.name.toLowerCase().endsWith('.ktx2')) {
-          await loadKTX2_ToTexture(f);
+        if (fileName.endsWith('.gltf') || fileName.endsWith('.glb')) {
+          // --- glTF Handling ---
+          window.currentGltfFile = f;
+          if (gltfControls) gltfControls.style.display = 'block';
+          
+          stat.textContent = `Selected: ${f.name}`;
+          meta.textContent = 'glTF detected. Click Validate button to analyze.';
+          texInfo.style.display = 'none'; // Hide texture info panel
+          
+          logApp(`Selected glTF file: ${f.name}`, 'info');
         } else {
-          await loadImageToTexture(f);
+          // --- Texture Handling ---
+          window.currentGltfFile = null;
+          if (gltfControls) gltfControls.style.display = 'none';
+          
+          if (fileName.endsWith('.ktx2')) {
+            await loadKTX2_ToTexture(f);
+          } else {
+            await loadImageToTexture(f);
+          }
         }
       } catch (e) {
         console.error(e);
