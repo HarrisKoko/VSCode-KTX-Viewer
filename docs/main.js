@@ -1,5 +1,4 @@
 // main.js — JPG/PNG/WebP renderer + KTX2 (BC1-BC7) loader using WebGPU
-// Layout: permanent left sidebar (320px) + canvas on right (no overlay).
 
 // Minimal logger (uses #log in sidebar)
 const log = (msg) => {
@@ -42,7 +41,7 @@ const logApp = (msg, level = 'info') => {
   else console.log(msg);
 };
 
-// ---------- Upload helpers ----------
+// helpers for padding rows
 function padRows(src, width, height, bytesPerPixel = 4) {
   const rowStride = width * bytesPerPixel;
   const aligned = Math.ceil(rowStride / 256) * 256;
@@ -82,7 +81,7 @@ async function waitForKTXParser() {
   }
 }
 
-// ---------- build permanent left sidebar layout ----------
+// sidebar
 (async function ensureLayout() {
   const canvas = document.getElementById('gfx');
   if (!canvas) {
@@ -110,7 +109,6 @@ async function waitForKTXParser() {
   wrapper.style.margin = '0';
   wrapper.style.padding = '0';
   wrapper.style.boxSizing = 'border-box';
-  // Move body children into wrapper: we'll place sidebar and canvas specifically
   // Insert wrapper before canvas
   canvas.parentNode.insertBefore(wrapper, canvas);
 
@@ -129,7 +127,7 @@ async function waitForKTXParser() {
   sidebar.style.borderRight = '1px solid rgba(255,255,255,0.04)';
   sidebar.style.zIndex = 1000;
 
-  // Load sidebar content from injected template
+// Load sidebar content from injected template
  // Load sidebar content (web version fetches, extension version uses injected)
   if (window.isStandalone) {
     // Web/GitHub Pages version - fetch template
@@ -178,7 +176,7 @@ async function waitForKTXParser() {
   document.body.style.background = '#000';
 })();
 
-// ---------- Main bootstrap (WebGPU + loaders + preview) ----------
+// main webgpu app
 (async () => {
   try {
     if (!('gpu' in navigator)) { 
@@ -302,7 +300,7 @@ async function waitForKTXParser() {
       html += `<div style="color:#8cf;">File Size:</div>`;
       html += `<div style="margin-left:8px; margin-bottom:4px;">${formatBytes(fileSize)}</div>`;
       
-      html += `<div style="color:#8cf;">GPU Memory:</div>`;
+      html += `<div style="color:#8cf;">GPU Memory (Estimated):</div>`;
       html += `<div style="margin-left:8px; margin-bottom:4px;">${formatBytes(gpuMemory)}</div>`;
       
       const compressionRatio = fileSize > 0 ? (gpuMemory / fileSize).toFixed(2) : 'N/A';
@@ -459,7 +457,7 @@ async function waitForKTXParser() {
       applySelectedMip();
     };
 
-    // ---------- Loaders ----------
+    // loaders
     async function createMipImages(imageBitmap) {
       const w = imageBitmap.width, h = imageBitmap.height;
       const mips = [];
@@ -705,7 +703,7 @@ async function waitForKTXParser() {
       if (texPipeline) texBindGroup = makeTexBindGroup();
     }
 
-    // ---------- Frame loop ----------
+    // frame loop
     function frame() {
       configureIfNeeded();
       updateUniforms();
