@@ -17,6 +17,8 @@ export function activate(context: vscode.ExtensionContext) {
       const ktxTranscoderUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'transcoder.js'));
       const libktxUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'libktx.js'));
       const libktxWasmUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'libktx.wasm'));
+      const basisJsUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'basis_transcoder.js'));
+      const basisWasmUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'basis_transcoder.wasm'));
       const mainUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'main.js'));
       const shaderUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'shaders.wgsl'));
 
@@ -58,11 +60,13 @@ export function activate(context: vscode.ExtensionContext) {
           <script nonce="${nonce}">
             window.shaderUri = '${shaderUri}';
             // FIXED: Variable name matches transcoder.js expectation
-            window.LIBKTX_WASM = "${libktxWasmUri}"; 
+            window.LIBKTX_WASM = "${basisWasmUri}"; 
+            window.BASIS_JS = "${basisJsUri}";
+            window.BASIS_WASM = "${basisWasmUri}";
           </script>
 
           <script nonce="${nonce}" src="${readUri}"></script>
-          <script nonce="${nonce}" src="${libktxUri}"></script>
+          <script nonce="${nonce}" src="${basisJsUri}"></script>
 
           <script nonce="${nonce}" type="module" src="${mainUri}"></script>
         </body>

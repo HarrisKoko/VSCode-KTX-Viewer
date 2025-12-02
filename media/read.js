@@ -1,6 +1,11 @@
 // File for parsing KTX2 files
 // | Identifier | Header | Level Index | DFD | KVD | SGD | Mip Level Array |
 
+function getNonce() {
+  const script = document.currentScript || document.querySelector('script[nonce]');
+  return script ? script.nonce : '';
+}
+
 
 // App logger (appends to scrollable log with severity colors)
 const logApp = (...args) => {
@@ -94,30 +99,85 @@ async function loadFzstd() {
 let basisModulePromise = null;
 let BasisModule = null;
 
+function loadScript(url) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement("script");
+    el.src = url;
+    
+    const nonce = getNonce();
+    if (nonce) {
+      el.setAttribute('nonce', nonce);
+    }
+
+    el.onload = resolve;
+    el.onerror = () => reject(new Error(`Script load error for ${url}`));
+    document.head.appendChild(el);
+  });
+}
+
 async function loadBasisModule() {
   if (basisModulePromise) return basisModulePromise;
 
   basisModulePromise = new Promise(async (resolve, reject) => {
     try {
-      // 1. Load JS file by script tag
-      await loadScript("media/basisu/basis_transcoder.js");
+      const scriptUrl = window.BASIS_JS || "media/basisu/basis_transcoder.js";
+      
+      // ... (Keep your existing shim code for module.exports if you added it) ...
+      // 1. Shim module.exports to capture the library
+      const backupModule = window.module;
+      const backupExports = window.exports;
+      window.module = { exports: {} };
+      window.exports = window.module.exports;
 
-      // Ensure global BasisModule function exists
-      if (typeof BasisModule !== "function") {
-        return reject(new Error("basis_transcoder.js did not define BasisModule"));
+      await loadScript(scriptUrl);
+
+      let LoadedFunc = window.module.exports;
+      if (typeof LoadedFunc !== 'function') {
+         if (LoadedFunc && typeof LoadedFunc.MSC_TRANSCODER === 'function') {
+             LoadedFunc = LoadedFunc.MSC_TRANSCODER;
+         } else {
+             LoadedFunc = window.MSC_TRANSCODER || window.BasisModule || window.Module;
+         }
       }
 
-      // 2. Load WASM binary
-      const wasmBinary = await fetch("media/basisu/basis_transcoder.wasm")
-        .then(r => r.arrayBuffer());
+      window.module = backupModule;
+      window.exports = backupExports;
 
-      // 3. Initialize module
+      if (typeof LoadedFunc !== "function") {
+        return reject(new Error("Could not find BasisModule export"));
+      }
+      
+      BasisModule = LoadedFunc;
+
+      // 2. Load WASM
+      const wasmUrl = window.BASIS_WASM || "media/basisu/basis_transcoder.wasm";
+      const wasmBinary = await fetch(wasmUrl).then(r => {
+        if (!r.ok) throw new Error(`Failed to load WASM: ${r.status}`);
+        return r.arrayBuffer();
+      });
+
+      // 3. Initialize Module
       BasisModule({
         wasmBinary
       }).then(mod => {
         BasisModule = mod;
+
+        // --- FIX: CALL INITIALIZE BASIS ---
+        try {
+          if (mod.initializeBasis) {
+            mod.initializeBasis();
+            console.log("✓ Basis Universal initialized");
+          } else {
+            console.warn("mod.initializeBasis() missing - this might cause transcoder failure.");
+          }
+        } catch (e) {
+          console.error("Failed to initializeBasis:", e);
+        }
+        // ----------------------------------
+
         resolve(mod);
       }).catch(reject);
+
     } catch (err) {
       reject(err);
     }
@@ -126,15 +186,6 @@ async function loadBasisModule() {
   return basisModulePromise;
 }
 
-function loadScript(url) {
-  return new Promise((resolve, reject) => {
-    const el = document.createElement("script");
-    el.src = url;
-    el.onload = resolve;
-    el.onerror = reject;
-    document.head.appendChild(el);
-  });
-}
 
 // -----------------------------------------------------------------------------
 // Helper for Basis files
@@ -145,14 +196,33 @@ function makeBasisFile(u8) {
 
 // Choose GPU target (fixed)
 function getBasisTargetFormatForGPU(device) {
+  // 1. Define standard Basis Universal enum values (stable across most versions)
+  // cTFBC7_RGBA = 3
+  // cTFRGBA32 = 13
+  const TF_BC7_RGBA = 3;
+  const TF_RGBA32 = 13;
+
+  // 2. Check if we can find them on the module (just in case they differ)
+  // Some builds use 'cTF' prefix, others use 'TranscodeTarget' object.
+  const valBC7 = (BasisModule.cTFBC7_RGBA !== undefined) ? BasisModule.cTFBC7_RGBA 
+               : (BasisModule.TranscodeTarget?.BC7_RGBA || TF_BC7_RGBA);
+
+  const valRGBA32 = (BasisModule.cTFRGBA32 !== undefined) ? BasisModule.cTFRGBA32 
+                  : (BasisModule.TranscodeTarget?.RGBA32 || TF_RGBA32);
+
+  // 3. Select format based on device capabilities
   if (device.features.has("texture-compression-bc")) {
-    return BasisModule.TranscodeTarget.BC7; // best choice for UASTC
+    // console.log("Transcoding to BC7 (Format ID: " + valBC7 + ")");
+    return valBC7; 
   }
-  return BasisModule.TranscodeTarget.RGBA32;
+
+  // Fallback to uncompressed RGBA
+  // console.log("Transcoding to RGBA32 (Format ID: " + valRGBA32 + ")");
+  return valRGBA32;
 }
 
 
-async function parseKTX2(arrayBuffer) {
+async function parseKTX2(arrayBuffer, device) {
   const dv = new DataView(arrayBuffer);
 
   // Identifier (12 bytes) - validates that this is truly ktx2 file
@@ -243,32 +313,126 @@ async function parseKTX2(arrayBuffer) {
   } else if (header.supercompressionScheme === SUPERCOMPRESSION_BASIS_LZ) { // This means ETC1S or UASTC
     logApp("Detected BASIS-LZ texture (ETC1S or UASTC)");
 
-    // Load transcoder
+    // 1. Load the transcoder
     await loadBasisModule();
 
-    const basisFile = makeBasisFile(
-      new Uint8Array(arrayBuffer, levels[0].byteOffset, levels[0].byteLength)
-    );
+    let basisFile = null;
+    const fileUint8 = new Uint8Array(arrayBuffer);
 
-    if (!basisFile.isValid()) {
-      throw new Error("Invalid Basis file inside KTX2");
+    // 2. ATTEMPT 1: Check for explicit KTX2File support (common in newer builds)
+    if (BasisModule.KTX2File) {
+      try {
+        basisFile = new BasisModule.KTX2File(fileUint8);
+      } catch (e) {
+        console.warn("KTX2File constructor failed", e);
+      }
     }
 
-    const imageCount = basisFile.getNumImages();
-    if (imageCount === 0) throw new Error("Basis file has no images");
+    // 3. ATTEMPT 2: Fallback to BasisFile with the WHOLE BUFFER
+    // (Some builds auto-detect KTX2 headers inside BasisFile)
+    if (!basisFile) {
+      basisFile = new BasisModule.BasisFile(fileUint8);
+    }
+
+    // 4. Initialize
+    if (!basisFile.startTranscoding()) {
+      basisFile.close();
+      basisFile.delete();
+      throw new Error("Transcoder failed to initialize. (Your basis_transcoder.wasm might lack KTX2 support)");
+    }
+
+    const imageCount = basisFile.getNumImages;
+    if (imageCount === 0) {
+       basisFile.close();
+       basisFile.delete();
+       throw new Error("File has no images");
+    }
 
     const format = getBasisTargetFormatForGPU(device);
 
-    const bytes = basisFile.transcodeImage(
-      format,
-      0, // image index
-      0  // level index
-    );
+    const imageIndex = 0;
+    const levelIndex = 0;
+    let dst = null;
+    let status = false;
 
+    // Detect if we are using the KTX2File class or legacy BasisFile class
+    // (They have different function signatures)
+    const isKTX2File = (BasisModule.KTX2File && basisFile instanceof BasisModule.KTX2File);
+
+    try {
+      if (isKTX2File) {
+        // --- KTX2File PATH ---
+        const layerIndex = 0;
+        const faceIndex = 0;
+        
+        // 1. Get required size
+        const size = basisFile.getImageTranscodedSizeInBytes(
+          imageIndex, 
+          levelIndex, 
+          layerIndex, 
+          faceIndex, 
+          format
+        );
+        
+        // 2. Allocate memory
+        dst = new Uint8Array(size);
+
+        // 3. Transcode
+        // Signature: (dst, image, level, layer, face, format, getAlphaForOpaque, channelId, decodeFlags)
+        status = basisFile.transcodeImage(
+          dst,
+          imageIndex,
+          levelIndex,
+          layerIndex,
+          faceIndex,
+          format,
+          0,  // getAlphaForOpaqueFormats
+          -1, // channelId (-1 = default)
+          -1  // decodeFlags (-1 = default)
+        );
+
+      } else {
+        // --- BasisFile PATH ---
+        // 1. Get required size
+        const size = basisFile.getImageTranscodedSizeInBytes(
+          imageIndex, 
+          levelIndex, 
+          format
+        );
+
+        // 2. Allocate memory
+        dst = new Uint8Array(size);
+
+        // 3. Transcode
+        // Signature: (dst, image, level, format, pvETC1SImageDesc, getAlphaForOpaque)
+        status = basisFile.transcodeImage(
+          dst,
+          imageIndex,
+          levelIndex,
+          format,
+          0, // pvETC1SImageDesc (unused)
+          0  // getAlphaForOpaqueFormats
+        );
+      }
+    } catch (err) {
+      console.error("Transcode error:", err);
+      status = false;
+    }
+
+    if (!status || !dst) {
+       basisFile.close();
+       basisFile.delete();
+       throw new Error("Transcoding failed (returned false)");
+    }
+
+    // Assign the data
     levels[0].isDecompressed = true;
-    levels[0].decompressedData = bytes;
+    levels[0].decompressedData = dst;
+    levels[0].transcodedFormat = format;
 
     basisFile.close();
+    basisFile.delete(); 
+    
   } else if (header.supercompressionScheme === SUPERCOMPRESSION_ZLIB) {
     throw new Error('Zlib supercompression not yet supported. Use Zstd or uncompressed KTX2.');
   } else if (header.supercompressionScheme !== SUPERCOMPRESSION_NONE) {

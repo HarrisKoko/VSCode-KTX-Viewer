@@ -738,7 +738,7 @@ const m = await initLibKTX();
       await waitForKTXParser();
 
       const buf = await file.arrayBuffer();
-      const { header, levels, dfd, kvd } = await window.parseKTX2(buf);
+      const { header, levels, dfd, kvd } = await window.parseKTX2(buf, device);
 
       const is2D = header.pixelDepth === 0 && header.faceCount === 1;
       if (!is2D) {
@@ -798,47 +798,50 @@ const m = await initLibKTX();
       // Special case: Basis Universal formats use VK_FORMAT_UNDEFINED (0)
       else if (needsTranscode) {
         let basisFormatName = 'Basis Universal';
-  if (dfd && dfd.length > 0) {
-    if (dfd[0].colorModel === 163) basisFormatName = 'ETC1S';
-    else if (dfd[0].colorModel === 166 || dfd[0].colorModel === 152) basisFormatName = 'UASTC';
-  }
 
-  stat.textContent = `Loading ${file.name}... initializing transcoder for ${basisFormatName}`;
-  meta.textContent = 'Initializing Basis Universal...';
-
-  try {
-    // Prefer your existing convenience wrapper if present (initLibKTX)
-    if (window.initLibKTX && typeof window.initLibKTX === 'function') {
-      await window.initLibKTX(); // preserves earlier behavior
-    }
-    // Then transcode
-    transcodedLevels = await transcodeBasisKTX2(buf, header, levels, dfd, device);
-
-    // If transcode returned numeric 'format' codes (Basis targets), map to WebGPU format strings:
-    // We'll prefer BC7 if target was BC7, etc. You may already have vkFormatToWebGPU or similar.
-    // For simplicity, set wgpuFormat to bc7 if device supports BC, otherwise use rgba8unorm.
-    if (device.features.has('texture-compression-bc')) {
-      wgpuFormat = 'bc7-rgba-unorm';
-      blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
-    } else {
-      // fallback: upload RGBA8 uncompressed
-      wgpuFormat = 'rgba8unorm';
-      blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
-      // Note: if using rgba8unorm ensure you use padRows() NOT padBlockRowsBC()
-    }
-
-    stat.textContent = `Transcoding ${transcodedLevels.length} levels...`;
-    console.log("Transcoding success:", transcodedLevels);
-  
-
+        if (levels[0] && levels[0].isDecompressed) {
           
-        } catch (e) {
-          console.error(e);
-          logApp('Transcoding failed: ' + e.message);
-          stat.textContent = 'Error: ' + e.message;
-          throw e;
+          stat.textContent = `Using pre-transcoded Basis data...`;
+          
+          // Determine format from read.js result
+          // 3 = cTFBC7_RGBA, 13 = cTFRGBA32
+          const tf = levels[0].transcodedFormat; 
+          
+          if (tf === 3) {
+            wgpuFormat = 'bc7-rgba-unorm';
+            blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
+          } else if (tf === 13) {
+            wgpuFormat = 'rgba8unorm';
+            blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
+          } else {
+             // Fallback if read.js returned something else (e.g. ASTC)
+             // Defaulting to RGBA8 is usually safest if unknown
+             console.warn("Unknown transcoded format ID:", tf);
+             wgpuFormat = 'rgba8unorm';
+             blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
+          }
+
+          // We don't need 'transcodedLevels' array because we modified 'levels' in place
+          transcodedLevels = null; 
+          
+          logApp(`Texture already transcoded to ${wgpuFormat} by read.js`, 'success');
+
+        } else {
+          // If read.js didn't handle it, we would need libktx or another transcoder.
+          // Since you want to avoid libktx, we throw an error here if read.js failed.
+          throw new Error("Transcoding failed in read.js and LibKTX is disabled.");
         }
-      }
+      
+
+        if (dfd && dfd.length > 0) {
+          if (dfd[0].colorModel === 163) basisFormatName = 'ETC1S';
+          else if (dfd[0].colorModel === 166 || dfd[0].colorModel === 152) basisFormatName = 'UASTC';
+        }
+
+        stat.textContent = `Loading ${file.name}... initializing transcoder for ${basisFormatName}`;
+        meta.textContent = 'Initializing Basis Universal...';
+
+    }
 
       // PATH 1: NATIVE BC FORMAT - use existing code as-is
       else if (formatInfo && !formatInfo.needsProcessing) {
