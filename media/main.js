@@ -859,14 +859,24 @@ const m = await initLibKTX();
 
       let mipCount = transcodedLevels ? transcodedLevels.length : levels.length;
 
+      if (needsTranscode && levels[0].isDecompressed) {
+         // Count how many levels actually got transcoded
+         let validMips = 0;
+         for (let i = 0; i < levels.length; i++) {
+             if (levels[i].isDecompressed) validMips++;
+             else break;
+         }
+         mipCount = validMips; // Reduce mipCount to avoid uploading garbage
+      }
+
       // Create GPU texture
       // srcTex?.destroy?.();
-      srcTex = device.createTexture({
-        size: { width: header.pixelWidth, height: header.pixelHeight, depthOrArrayLayers: 1 },
-        format: wgpuFormat,
-        mipLevelCount: mipCount,
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
-      });
+        srcTex = device.createTexture({
+          size: { width: header.pixelWidth, height: header.pixelHeight, depthOrArrayLayers: 1 },
+          format: wgpuFormat,
+          mipLevelCount: mipCount, // Use the adjusted count
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+        });
 
       
 

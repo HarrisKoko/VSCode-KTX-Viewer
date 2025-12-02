@@ -122,7 +122,6 @@ async function loadBasisModule() {
     try {
       const scriptUrl = window.BASIS_JS || "media/basisu/basis_transcoder.js";
       
-      // ... (Keep your existing shim code for module.exports if you added it) ...
       // 1. Shim module.exports to capture the library
       const backupModule = window.module;
       const backupExports = window.exports;
@@ -162,7 +161,6 @@ async function loadBasisModule() {
       }).then(mod => {
         BasisModule = mod;
 
-        // --- FIX: CALL INITIALIZE BASIS ---
         try {
           if (mod.initializeBasis) {
             mod.initializeBasis();
@@ -173,7 +171,6 @@ async function loadBasisModule() {
         } catch (e) {
           console.error("Failed to initializeBasis:", e);
         }
-        // ----------------------------------
 
         resolve(mod);
       }).catch(reject);
@@ -210,12 +207,13 @@ function getBasisTargetFormatForGPU(device) {
   const valRGBA32 = (BasisModule.cTFRGBA32 !== undefined) ? BasisModule.cTFRGBA32 
                   : (BasisModule.TranscodeTarget?.RGBA32 || TF_RGBA32);
 
+  /*                
   // 3. Select format based on device capabilities
   if (device.features.has("texture-compression-bc")) {
     // console.log("Transcoding to BC7 (Format ID: " + valBC7 + ")");
     return valBC7; 
   }
-
+  */
   // Fallback to uncompressed RGBA
   // console.log("Transcoding to RGBA32 (Format ID: " + valRGBA32 + ")");
   return valRGBA32;
@@ -341,7 +339,17 @@ async function parseKTX2(arrayBuffer, device) {
       throw new Error("Transcoder failed to initialize. (Your basis_transcoder.wasm might lack KTX2 support)");
     }
 
-    const imageCount = basisFile.getNumImages;
+    // Detect Class FIRST
+    const isKTX2File = (BasisModule.KTX2File && basisFile instanceof BasisModule.KTX2File);
+
+    let imageCount = 1;
+    if (!isKTX2File) {
+        // Only legacy BasisFile has getNumImages()
+        if (typeof basisFile.getNumImages === 'function') {
+            imageCount = basisFile.getNumImages();
+        }
+    }
+
     if (imageCount === 0) {
        basisFile.close();
        basisFile.delete();
@@ -351,84 +359,69 @@ async function parseKTX2(arrayBuffer, device) {
     const format = getBasisTargetFormatForGPU(device);
 
     const imageIndex = 0;
-    const levelIndex = 0;
-    let dst = null;
-    let status = false;
-
-    // Detect if we are using the KTX2File class or legacy BasisFile class
-    // (They have different function signatures)
-    const isKTX2File = (BasisModule.KTX2File && basisFile instanceof BasisModule.KTX2File);
-
+    
+    // Ask the transcoder how many levels IT sees
+    let transcoderLevelCount = 1; 
     try {
-      if (isKTX2File) {
-        // --- KTX2File PATH ---
-        const layerIndex = 0;
-        const faceIndex = 0;
-        
-        // 1. Get required size
-        const size = basisFile.getImageTranscodedSizeInBytes(
-          imageIndex, 
-          levelIndex, 
-          layerIndex, 
-          faceIndex, 
-          format
-        );
-        
-        // 2. Allocate memory
-        dst = new Uint8Array(size);
-
-        // 3. Transcode
-        // Signature: (dst, image, level, layer, face, format, getAlphaForOpaque, channelId, decodeFlags)
-        status = basisFile.transcodeImage(
-          dst,
-          imageIndex,
-          levelIndex,
-          layerIndex,
-          faceIndex,
-          format,
-          0,  // getAlphaForOpaqueFormats
-          -1, // channelId (-1 = default)
-          -1  // decodeFlags (-1 = default)
-        );
-
-      } else {
-        // --- BasisFile PATH ---
-        // 1. Get required size
-        const size = basisFile.getImageTranscodedSizeInBytes(
-          imageIndex, 
-          levelIndex, 
-          format
-        );
-
-        // 2. Allocate memory
-        dst = new Uint8Array(size);
-
-        // 3. Transcode
-        // Signature: (dst, image, level, format, pvETC1SImageDesc, getAlphaForOpaque)
-        status = basisFile.transcodeImage(
-          dst,
-          imageIndex,
-          levelIndex,
-          format,
-          0, // pvETC1SImageDesc (unused)
-          0  // getAlphaForOpaqueFormats
-        );
-      }
-    } catch (err) {
-      console.error("Transcode error:", err);
-      status = false;
+        if (isKTX2File) {
+            // FIX: KTX2File uses .getLevels() with no arguments
+            transcoderLevelCount = basisFile.getLevels();
+        } else {
+            // FIX: BasisFile uses .getNumLevels(imageIndex)
+            transcoderLevelCount = basisFile.getNumLevels(imageIndex);
+        }
+    } catch(e) {
+        console.warn("Could not query numLevels from transcoder, defaulting to 1.", e);
     }
 
-    if (!status || !dst) {
-       basisFile.close();
-       basisFile.delete();
-       throw new Error("Transcoding failed (returned false)");
-    }
+    // Loop only up to the minimum of what the Header says and what the Transcoder says
+    const safeLevelCount = Math.min(levels.length, transcoderLevelCount);
 
-    // Assign the data
-    levels[0].isDecompressed = true;
-    levels[0].decompressedData = dst;
-    levels[0].transcodedFormat = format;
+    for (let i = 0; i < safeLevelCount; i++) {
+        const levelIndex = i;
+        let dst = null;
+        let status = false;
+
+        try {
+            if (isKTX2File) {
+                // KTX2File Path
+                const layerIndex = 0;
+                const faceIndex = 0;
+                
+                const size = basisFile.getImageTranscodedSizeInBytes(
+                    imageIndex, levelIndex, layerIndex, faceIndex, format
+                );
+                dst = new Uint8Array(size);
+                
+                status = basisFile.transcodeImage(
+                    dst, imageIndex, levelIndex, layerIndex, faceIndex, 
+                    format, 0, -1, -1
+                );
+            } else {
+                // BasisFile Path
+                const size = basisFile.getImageTranscodedSizeInBytes(
+                    imageIndex, levelIndex, format
+                );
+                dst = new Uint8Array(size);
+                
+                status = basisFile.transcodeImage(
+                    dst, imageIndex, levelIndex, format, 0, 0
+                );
+            }
+        } catch (err) {
+            console.warn(`Transcode warning on level ${i}:`, err);
+            status = false;
+        }
+
+        if (status && dst) {
+            levels[i].isDecompressed = true;
+            levels[i].decompressedData = dst;
+            levels[i].transcodedFormat = format;
+        } else {
+            console.warn(`Failed to transcode level ${i}. Stopping mip chain.`);
+            break; // Stop trying deeper levels if one fails
+        }
+    }
 
     basisFile.close();
     basisFile.delete(); 
