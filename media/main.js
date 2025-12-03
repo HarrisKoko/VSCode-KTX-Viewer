@@ -803,26 +803,65 @@ const m = await initLibKTX();
           
           stat.textContent = `Using pre-transcoded Basis data...`;
           
-          // Determine format from read.js result
-          // 3 = cTFBC7_RGBA, 13 = cTFRGBA32
           const tf = levels[0].transcodedFormat; 
+          const dataSize = levels[0].decompressedData.byteLength;
+          const w = header.pixelWidth;
+          const h = header.pixelHeight;
           
-          if (tf === 3) {
-            wgpuFormat = 'bc7-rgba-unorm';
-            blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
-          } else if (tf === 13) {
-            wgpuFormat = 'rgba8unorm';
-            blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
-          } else {
-             // Fallback if read.js returned something else (e.g. ASTC)
-             // Defaulting to RGBA8 is usually safest if unknown
-             console.warn("Unknown transcoded format ID:", tf);
+          console.log(`[main.js] Handover from read.js:`);
+          console.log(`   > Transcoded Format ID: ${tf}`);
+          console.log(`   > Actual Data Buffer Size: ${dataSize} bytes`);
+          console.log(`   > Image Dimensions: ${w}x${h}`);
+
+          // --- FIX: Add handling for Format 2 (BC1) and 6 (BC7) ---
+          if (tf === 2) { 
+             // ID 2 = BC1 (cTFBC1_RGB)
+             // 8 bytes per 4x4 block
+             wgpuFormat = 'bc1-rgba-unorm'; 
+             blockWidth = 4; blockHeight = 4; bytesPerBlock = 8;
+          } 
+          else if (tf === 3) {
+             // ID 3 = BC3 (cTFBC3_RGBA) - Standard DXT5
+             // 16 bytes per 4x4 block
+             wgpuFormat = 'bc3-rgba-unorm';
+             blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
+          } 
+          else if (tf === 6) {
+             // ID 6 = BC7 (cTFBC7_RGBA)
+             // 16 bytes per 4x4 block
+             wgpuFormat = 'bc7-rgba-unorm';
+             blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
+          } 
+          else if (tf === 13) {
+             // ID 13 = Uncompressed RGBA32
+             wgpuFormat = 'rgba8unorm';
+             blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
+          } 
+          else {
+             console.warn(`[main.js] Unknown Transcoded Format ID: ${tf}`);
+             // Default fallback (likely to look wrong if it wasn't RGBA)
              wgpuFormat = 'rgba8unorm';
              blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
           }
 
-          // We don't need 'transcodedLevels' array because we modified 'levels' in place
-          transcodedLevels = null; 
+          // --- DEBUG VALIDATION ---
+          const wBlocks = Math.ceil(w / blockWidth);
+          const hBlocks = Math.ceil(h / blockHeight);
+          const expectedBytes = wBlocks * hBlocks * bytesPerBlock;
+
+          console.log(`[main.js] WebGPU Configuration:`);
+          console.log(`   > Selected Format: ${wgpuFormat}`);
+          console.log(`   > Block Config: ${blockWidth}x${blockHeight}, ${bytesPerBlock} bytes/block`);
+          console.log(`   > Expected Payload: ${expectedBytes} bytes`);
+
+          if (dataSize !== expectedBytes) {
+             console.error(`[main.js] CRITICAL MISMATCH: WebGPU expects ${expectedBytes} bytes but buffer has ${dataSize} bytes!`);
+             console.error(`   > This causes the visual corruption (stripes/padding).`);
+          } else {
+             console.log(`[main.js] ✓ Size check passed.`);
+          }
+
+          transcodedLevels = null;
           
           logApp(`Texture already transcoded to ${wgpuFormat} by read.js`, 'success');
 
