@@ -196,25 +196,26 @@ function getBasisTargetFormatForGPU(device) {
   // --- FIX START: Update Standard IDs ---
   // Standard Basis Universal enum values:
   // 0=ETC1, 1=ETC2, 2=BC1, 3=BC3, 4=BC4, 5=BC5, 6=BC7, 13=RGBA32
-  const TF_BC7_RGBA = 2;  // CHANGED FROM 3 TO 6
+  const TF_BC1_RGBA = 2;  // CHANGED FROM 3 TO 6
   const TF_RGBA32 = 13;
   // --------------------------------------
 
   // Try to find explicit exports, otherwise fallback to our corrected constants
   const valBC7 = (BasisModule.cTFBC7_RGBA !== undefined) ? BasisModule.cTFBC7_RGBA 
-               : (BasisModule.TranscodeTarget?.BC7_RGBA || TF_BC7_RGBA);
+               : (BasisModule.TranscodeTarget?.BC7_RGBA || TF_BC1_RGBA);
 
   const valRGBA32 = (BasisModule.cTFRGBA32 !== undefined) ? BasisModule.cTFRGBA32 
                   : (BasisModule.TranscodeTarget?.RGBA32 || TF_RGBA32);
 
   // Debug log to confirm we are using ID 6 now
-  console.log(`[read.js] Format IDs available - BC7: ${valBC7}, RGBA32: ${valRGBA32}`);
+  //console.log(`[read.js] Format IDs available - BC7: ${valBC7}, RGBA32: ${valRGBA32}`);
 
+  
   if (device.features.has("texture-compression-bc")) {
-    console.log(`[read.js] Requesting Format: BC7 (ID: ${valBC7})`);
+    console.log(`[read.js] Requesting Format: BC1 (ID: ${valBC7})`);
     return valBC7; 
   }
-
+  
   console.log(`[read.js] Requesting Format: RGBA32 (ID: ${valRGBA32})`);
   return valRGBA32;
 }
@@ -317,20 +318,11 @@ async function parseKTX2(arrayBuffer, device) {
     let basisFile = null;
     const fileUint8 = new Uint8Array(arrayBuffer);
 
-    // 2. ATTEMPT 1: Check for explicit KTX2File support (common in newer builds)
-    if (BasisModule.KTX2File) {
-      try {
-        basisFile = new BasisModule.KTX2File(fileUint8);
-      } catch (e) {
-        console.warn("KTX2File constructor failed", e);
-      }
-    }
+    const sgdOffset = index.sgdByteOffset;
+    const sgdLength = index.sgdByteLength;
+    const basisPayload = new Uint8Array(arrayBuffer, sgdOffset, sgdLength);
 
-    // 3. ATTEMPT 2: Fallback to BasisFile with the WHOLE BUFFER
-    // (Some builds auto-detect KTX2 headers inside BasisFile)
-    if (!basisFile) {
-      basisFile = new BasisModule.BasisFile(fileUint8);
-    }
+    basisFile = makeBasisFile(basisPayload);
 
     // 4. Initialize
     if (!basisFile.startTranscoding()) {
@@ -392,21 +384,46 @@ async function parseKTX2(arrayBuffer, device) {
                 ? basisFile.getImageTranscodedSizeInBytes(imageIndex, levelIndex, 0, 0, format)
                 : basisFile.getImageTranscodedSizeInBytes(imageIndex, levelIndex, format);
 
-                // --- DEBUG LOG START ---
-                const width = levels[levelIndex].width;
-                const height = levels[levelIndex].height;
-                const expectedBC7 = Math.ceil(width/4) * Math.ceil(height/4) * 16;
-                const expectedRGBA = width * height * 4;
+                // --- Format size debug ---------------------------------------
+                const w = levels[levelIndex].width;
+                const h = levels[levelIndex].height;
 
-                console.log(`[read.js] Level ${levelIndex} (${width}x${height}):`);
+                const blocksX = Math.ceil(w / 4);
+                const blocksY = Math.ceil(h / 4);
+
+                let expectedCompressed = null;
+                let formatLabel = '';
+
+                // Basis Universal format IDs:
+                // 0 = ETC1, 1 = ETC2, 2 = BC1, 3 = BC3, 6 = BC7, 13 = RGBA32
+                if (format === 2) {            // BC1
+                    expectedCompressed = blocksX * blocksY * 8;
+                    formatLabel = 'BC1';
+                } else if (format === 3) {     // BC3
+                    expectedCompressed = blocksX * blocksY * 16;
+                    formatLabel = 'BC3';
+                } else if (format === 6) {     // BC7
+                    expectedCompressed = blocksX * blocksY * 16;
+                    formatLabel = 'BC7';
+                }
+
+                const expectedRGBA = w * h * 4;
+
+                console.log(`[read.js] Level ${levelIndex} (${w}x${h}):`);
                 console.log(`   > Requested Format ID: ${format}`);
                 console.log(`   > WASM calculated size: ${size} bytes`);
-                console.log(`   > Expected if BC7:      ${expectedBC7} bytes`);
-                console.log(`   > Expected if RGBA32:   ${expectedRGBA} bytes`);
-                
-                if (size === expectedBC7) console.log("   > MATCH: WASM outputting BC7 size");
-                else if (size === expectedRGBA) console.log("   > MATCH: WASM outputting RGBA32 size");
-                else console.warn("   > MISMATCH: Size matches neither standard BC7 nor RGBA32!");
+
+                if (expectedCompressed !== null)
+                    console.log(`   > Expected if ${formatLabel}: ${expectedCompressed} bytes`);
+                console.log(`   > Expected if RGBA32:      ${expectedRGBA} bytes`);
+
+                if (expectedCompressed !== null && size === expectedCompressed) {
+                    console.log(`   > MATCH: WASM outputting ${formatLabel} size`);
+                } else if (size === expectedRGBA) {
+                    console.log("   > MATCH: WASM outputting RGBA32 size");
+                } else {
+                    console.warn("   > WARNING: Size matches neither expected compressed nor RGBA32 size.");
+                }
 
                 dst = new Uint8Array(size);
                 

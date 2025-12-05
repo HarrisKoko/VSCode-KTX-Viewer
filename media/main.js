@@ -922,13 +922,29 @@ const m = await initLibKTX();
       // Upload mip levels
       for (let i = 0; i < mipCount; i++) {
         const lvl = transcodedLevels ? transcodedLevels[i] : levels[i];
-        const raw = transcodedLevels 
-          ? transcodedLevels[i].data 
-          : window.getLevelData(buf, lvl); // not new Uint8Array(buf, lvl.byteOffset, lvl.byteLength); ?
+
+        // Choose the correct source buffer:
+        //  - If we’re in the Basis path and read.js already transcoded, use lvl.decompressedData.
+        //  - Else, if we have an explicit transcodedLevels array, use that.
+        //  - Else, fall back to the original level bytes in the KTX2 file.
+        let raw;
+        if (needsTranscode && levels[i].isDecompressed && levels[i].decompressedData) {
+          raw = levels[i].decompressedData;
+        } else if (transcodedLevels) {
+          raw = transcodedLevels[i].data;
+        } else {
+          raw = window.getLevelData(buf, lvl);
+        }
+
+        const w = lvl.width  || Math.max(1, header.pixelWidth  >> i);
+        const h = lvl.height || Math.max(1, header.pixelHeight >> i);
+
         const { data, bytesPerRow, rowsPerImage } =
-          padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, blockWidth, blockHeight);
-        const uploadWidth = Math.ceil(lvl.width / blockWidth) * blockWidth;
-        const uploadHeight = Math.ceil(lvl.height / blockHeight) * blockHeight;
+          padBlockRowsBC(raw, w, h, bytesPerBlock, blockWidth, blockHeight);
+
+        const uploadWidth  = Math.ceil(w / blockWidth)  * blockWidth;
+        const uploadHeight = Math.ceil(h / blockHeight) * blockHeight;
+
         device.queue.writeTexture(
           { texture: srcTex, mipLevel: i },
           data,
@@ -936,6 +952,7 @@ const m = await initLibKTX();
           { width: uploadWidth, height: uploadHeight, depthOrArrayLayers: 1 }
         );
       }
+
 
       mipCount = levels.length || 1;
       currentMip = 0;
