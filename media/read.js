@@ -153,6 +153,31 @@ function vkFormatToWebGPU(vkFormat) {
     // BC7 - 4x4 blocks, 16 bytes per block
     145: { format: 'bc7-rgba-unorm', blockWidth: 4, blockHeight: 4, bytesPerBlock: 16 },
     146: { format: 'bc7-rgba-unorm-srgb', blockWidth: 4, blockHeight: 4, bytesPerBlock: 16 },
+
+    // --- UNCOMPRESSED FORMATS ---
+
+    // RGB8 (UNORM & SRGB) — 3 bytes per pixel
+    // these formats can't be used directly in WebGPU, need to be expanded to RGBA8
+    23: { format: 'rgba8unorm', bytesPerPixel: 4, sourceChannels: 3 },
+    24: { format: 'rgba8unorm-srgb', bytesPerPixel: 4, sourceChannels: 3 },
+    29: { format: 'rgba8unorm', bytesPerPixel: 4, sourceChannels: 3 },
+
+    // RGBA8
+    37:  { format: 'rgba8unorm',       bytesPerPixel: 4 },
+    43:  { format: 'rgba8unorm-srgb',  bytesPerPixel: 4 },
+
+    // RGBA16F — 8 bytes per pixel
+    97:  { format: 'rgba16float',      bytesPerPixel: 8 },
+
+    // RGBA32F — 16 bytes per pixel
+    109: { format: 'rgba32float',      bytesPerPixel: 16 },
+
+    // R11G11B10 UFLOAT
+    100: { format: 'rg11b10ufloat',    bytesPerPixel: 4 },
+
+    // RGB9E5
+    99:  { format: 'rgb9e5ufloat',     bytesPerPixel: 4 },
+
   };
   
   return formats[vkFormat] || null;
@@ -168,6 +193,16 @@ function getFormatName(vkFormat) {
     141: 'BC5 (RGTC2) UNORM', 142: 'BC5 (RGTC2) SNORM',
     143: 'BC6H UFLOAT', 144: 'BC6H FLOAT',
     145: 'BC7 UNORM', 146: 'BC7 SRGB',
+    23:  'RGB8 UNORM',
+    24:  'RGB8 SRGB',
+    29:  'RGB8 SRGB',
+    37:  'RGBA8 UNORM',
+    43:  'RGBA8 SRGB',
+    97:  'RGBA16 FLOAT',
+    99:  'RGB9E5 UFLOAT', 
+    100: 'R11G11B10 UFLOAT',
+    109: 'RGBA32 FLOAT',
+    
   };
   return names[vkFormat] || `VK Format ${vkFormat}`;
 }

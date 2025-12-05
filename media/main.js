@@ -552,10 +552,10 @@
         }
 
         const formatInfo = window.vkFormatToWebGPU(header.vkFormat);
-        if (!formatInfo) {
-          logApp(`Unsupported vkFormat ${header.vkFormat}. Supported: BC1-BC7.`, 'error');
-          throw new Error(`Unsupported vkFormat ${header.vkFormat}. Supported: BC1-BC7.`);
-        }
+        if (!formatInfo) throw new Error(`Unsupported vkFormat ${header.vkFormat}`);
+
+        const isBlock = !!formatInfo.blockWidth; // BC formats
+        const isPixel = !!formatInfo.bytesPerPixel; // uncompressed
 
         const { format: wgpuFormat, blockWidth, blockHeight, bytesPerBlock } = formatInfo;
         const formatName = window.getFormatName ? window.getFormatName(header.vkFormat) : `vkFormat ${header.vkFormat}`;
@@ -568,8 +568,51 @@
           usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
         });
 
+        srcView = srcTex.createView();
+
+        if (texPipeline) {
+            texBindGroup = makeTexBindGroup();
+        }
+
+        
         for (let i = 0; i < levels.length; i++) {
+
           const lvl = levels[i];
+          if (isPixel) {
+            let raw = window.getLevelData(buf, lvl);
+
+            if (formatInfo.sourceChannels === 3) {
+                const pixelCount = lvl.width * lvl.height;
+                const rgba = new Uint8Array(pixelCount * 4);
+
+                for (let p = 0; p < pixelCount; p++) {
+                    rgba[p*4+0] = raw[p*3+0];
+                    rgba[p*4+1] = raw[p*3+1];
+                    rgba[p*4+2] = raw[p*3+2];
+                    rgba[p*4+3] = 255;
+                }
+
+                raw = rgba;
+            }
+
+            // Compute row padding
+            const { data, bytesPerRow } = padRows(
+                raw,
+                lvl.width,
+                lvl.height,
+                4
+            );
+
+            device.queue.writeTexture(
+                { texture: srcTex, mipLevel: i },
+                data,
+                { bytesPerRow },
+                { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 }
+            );
+
+            continue; // Skip BC path
+          }
+
           const raw = window.getLevelData(buf, lvl);
           const { data, bytesPerRow, rowsPerImage } =
             padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, blockWidth, blockHeight);
@@ -590,9 +633,6 @@
         mipSlider.value = 0;
         mipLabel.textContent = '0';
         mipControls.style.display = mipCount > 1 ? 'block' : 'none';
-
-        srcView = srcTex.createView();
-        if (texPipeline) texBindGroup = makeTexBindGroup();
 
         // Build metadata object for texture info panel
         const compressionName = window.getSupercompressionName ? 
