@@ -178,15 +178,25 @@
       }
 
       const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+
+      const supportsBC   = adapter.features.has("texture-compression-bc");
+      const supportsETC2 = adapter.features.has("texture-compression-etc2");
+
+      console.log("BC supported?", supportsBC);
+      console.log("ETC2 supported?", supportsETC2);
+
+      const requiredFeatures = [];
+      if (supportsBC)   requiredFeatures.push("texture-compression-bc");
+      if (supportsETC2) requiredFeatures.push("texture-compression-etc2");
+
+      const device = await adapter.requestDevice({ requiredFeatures });
+
       if (!adapter) { 
         logApp('No GPU adapter found.', 'error'); 
         throw new Error('No GPU adapter');
       }
 
       const bcSupported = adapter.features.has('texture-compression-bc');
-      const device = await adapter.requestDevice({
-        requiredFeatures: bcSupported ? ['texture-compression-bc'] : []
-      });
 
       device.addEventListener?.('uncapturederror', (e) => {
         console.error('WebGPU uncaptured error:', e.error || e);
@@ -501,6 +511,9 @@
           usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
         });
 
+        srcView = srcTex.createView();
+        texBindGroup = makeTexBindGroup();
+
         const mipImages = await createMipImages(bmp);
         for (let i = 0; i < mipImages.length; i++) {
           const m = mipImages[i];
@@ -594,6 +607,13 @@
 
         const { format: wgpuFormat, blockWidth, blockHeight, bytesPerBlock } = formatInfo;
         const formatName = window.getFormatName ? window.getFormatName(header.vkFormat) : `vkFormat ${header.vkFormat}`;
+
+        if (
+            formatInfo.format.startsWith("etc2") &&
+            !adapter.features.has("texture-compression-etc2")
+        ) {
+            throw new Error("ETC2 textures are not supported on this GPU/browser.");
+        }
 
         srcTex?.destroy?.();
         srcTex = device.createTexture({
