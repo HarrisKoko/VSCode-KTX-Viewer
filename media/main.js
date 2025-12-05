@@ -533,6 +533,41 @@
         logApp(`Successfully loaded ${file.name} (${bmp.width}×${bmp.height}, ${levels} mips)`, 'success');
       }
 
+      function float32ToFloat16(val) {
+        const floatView = new Float32Array(1);
+        const intView = new Uint32Array(floatView.buffer);
+
+        floatView[0] = val;
+        const x = intView[0];
+
+        const sign = (x >> 31) & 0x1;
+        let exp = ((x >> 23) & 0xFF) - 112;
+        let mant = (x >> 13) & 0x3FF;
+
+        if (exp <= 0) {
+            if (exp < -10) return sign << 15;
+            mant = (mant | 0x400) >> (1 - exp);
+            exp = 0;
+        } else if (exp >= 31) {
+            exp = 31;
+            mant = 0;
+        }
+
+        return (sign << 15) | (exp << 10) | mant;
+      }
+
+      function convertRGBA32FtoRGBA16F(src, width, height) {
+        const pixelCount = width * height;
+        const dst = new Uint16Array(pixelCount * 4); // 4 channels
+
+        const f32 = new Float32Array(src.buffer, src.byteOffset, pixelCount * 4);
+
+        for (let i = 0; i < pixelCount * 4; i++) {
+            dst[i] = float32ToFloat16(f32[i]);
+        }
+        return new Uint8Array(dst.buffer);
+      }
+
       async function loadKTX2_ToTexture(file) {
         if (!bcSupported) {
           logApp('BC compressed textures not supported on this device.', 'error');
@@ -591,16 +626,21 @@
                     rgba[p*4+2] = raw[p*3+2];
                     rgba[p*4+3] = 255;
                 }
-
                 raw = rgba;
             }
+
+            if (formatInfo.sourceBytesPerPixel === 16 && formatInfo.bytesPerPixel === 8) {
+                // Convert float32 → float16 per component
+                raw = convertRGBA32FtoRGBA16F(raw, lvl.width, lvl.height);
+            }
+
 
             // Compute row padding
             const { data, bytesPerRow } = padRows(
                 raw,
                 lvl.width,
                 lvl.height,
-                4
+                formatInfo.bytesPerPixel
             );
 
             device.queue.writeTexture(

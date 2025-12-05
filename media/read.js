@@ -170,13 +170,18 @@ function vkFormatToWebGPU(vkFormat) {
     97:  { format: 'rgba16float',      bytesPerPixel: 8 },
 
     // RGBA32F — 16 bytes per pixel
-    109: { format: 'rgba32float',      bytesPerPixel: 16 },
+    // going to doconvert to RGBA16F for WebGPU usage for now
+    109: { format: 'rgba16float', bytesPerPixel: 8, sourceBytesPerPixel: 16 },
+
 
     // R11G11B10 UFLOAT
     100: { format: 'rg11b10ufloat',    bytesPerPixel: 4 },
+    122: { format: "rg11b10ufloat", bytesPerPixel: 4 },
+
 
     // RGB9E5
     99:  { format: 'rgb9e5ufloat',     bytesPerPixel: 4 },
+    123: { format: 'rgb9e5ufloat', bytesPerPixel: 4 },
 
   };
   
