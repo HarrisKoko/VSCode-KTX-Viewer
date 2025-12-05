@@ -125,6 +125,7 @@ function getLevelData(arrayBuffer, level) {
 // Vulkan format enum to WebGPU format string + metadata
 // Returns: { format: 'bc7-rgba-unorm', blockWidth: 4, blockHeight: 4, bytesPerBlock: 16 }
 function vkFormatToWebGPU(vkFormat) {
+  console.log('vkFormatToWebGPU called with:', vkFormat);
   const formats = {
     // BC1 (DXT1) - 4x4 blocks, 8 bytes per block
     131: { format: 'bc1-rgba-unorm', blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 },
@@ -194,7 +195,9 @@ function vkFormatToWebGPU(vkFormat) {
 
   };
   
-  return formats[vkFormat] || null;
+  const result = formats[vkFormat] || null;
+  console.log('vkFormatToWebGPU returning:', result);
+  return result;
 }
 
 // Apply DFD corrections to format info
