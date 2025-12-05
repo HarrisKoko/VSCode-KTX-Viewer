@@ -196,11 +196,19 @@ async function waitForKTXParser() {
       logApp('No GPU adapter found.', 'error'); 
       throw new Error('No GPU adapter');
     }
-
     const bcSupported = adapter.features.has('texture-compression-bc');
-    const device = await adapter.requestDevice({
-      requiredFeatures: bcSupported ? ['texture-compression-bc'] : []
-    });
+    
+    const supportsBC   = adapter.features.has("texture-compression-bc");
+    const supportsETC2 = adapter.features.has("texture-compression-etc2");
+
+    console.log("BC supported?", supportsBC);
+    console.log("ETC2 supported?", supportsETC2);
+
+    const requiredFeatures = [];
+    if (supportsBC)   requiredFeatures.push("texture-compression-bc");
+    if (supportsETC2) requiredFeatures.push("texture-compression-etc2");
+
+    const device = await adapter.requestDevice({ requiredFeatures });
 
     device.addEventListener?.('uncapturederror', (e) => {
       console.error('WebGPU uncaptured error:', e.error || e);
@@ -490,6 +498,9 @@ async function waitForKTXParser() {
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
       });
 
+      srcView = srcTex.createView();
+      texBindGroup = makeTexBindGroup();
+
       const mipImages = await createMipImages(bmp);
       for (let i = 0; i < mipImages.length; i++) {
         const m = mipImages[i];
@@ -522,94 +533,181 @@ async function waitForKTXParser() {
       logApp(`Successfully loaded ${file.name} (${bmp.width}×${bmp.height}, ${levels} mips)`, 'success');
     }
 
-    async function loadKTX2_ToTexture(file) {
-      if (!bcSupported) {
-        logApp('BC compressed textures not supported on this device.', 'error');
-        throw new Error('BC compressed textures not supported on this device.');
-      }
-      
-      logApp(`Loading KTX2 ${file.name}...`, 'info');
-      await waitForKTXParser();
+    function float32ToFloat16(val) {
+      const floatView = new Float32Array(1);
+      const intView = new Uint32Array(floatView.buffer);
 
-      const buf = await file.arrayBuffer();
-      const { header, levels, dfd, kvd } = await window.parseKTX2(buf);
+      floatView[0] = val;
+      const x = intView[0];
 
-      const is2D = header.pixelDepth === 0 && header.faceCount === 1;
-      if (!is2D) {
-        logApp('Only 2D, 1-face KTX2 supported in this demo.', 'error');
-        throw new Error('Only 2D, 1-face KTX2 supported in this demo.');
-      }
+      const sign = (x >> 31) & 0x1;
+      let exp = ((x >> 23) & 0xFF) - 112;
+      let mant = (x >> 13) & 0x3FF;
 
-      const formatInfo = window.vkFormatToWebGPU(header.vkFormat);
-      if (!formatInfo) {
-        logApp(`Unsupported vkFormat ${header.vkFormat}. Supported: BC1-BC7.`, 'error');
-        throw new Error(`Unsupported vkFormat ${header.vkFormat}. Supported: BC1-BC7.`);
+      if (exp <= 0) {
+          if (exp < -10) return sign << 15;
+          mant = (mant | 0x400) >> (1 - exp);
+          exp = 0;
+      } else if (exp >= 31) {
+          exp = 31;
+          mant = 0;
       }
 
-      const { format: wgpuFormat, blockWidth, blockHeight, bytesPerBlock } = formatInfo;
-      const formatName = window.getFormatName ? window.getFormatName(header.vkFormat) : `vkFormat ${header.vkFormat}`;
-
-      srcTex?.destroy?.();
-      srcTex = device.createTexture({
-        size: { width: header.pixelWidth, height: header.pixelHeight, depthOrArrayLayers: 1 },
-        format: wgpuFormat,
-        mipLevelCount: levels.length,
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
-      });
-
-      for (let i = 0; i < levels.length; i++) {
-        const lvl = levels[i];
-        const raw = window.getLevelData(buf, lvl);
-        const { data, bytesPerRow, rowsPerImage } =
-          padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, blockWidth, blockHeight);
-        const uploadWidth = Math.ceil(lvl.width / blockWidth) * blockWidth;
-        const uploadHeight = Math.ceil(lvl.height / blockHeight) * blockHeight;
-        device.queue.writeTexture(
-          { texture: srcTex, mipLevel: i },
-          data,
-          { bytesPerRow, rowsPerImage },
-          { width: uploadWidth, height: uploadHeight, depthOrArrayLayers: 1 }
-        );
-      }
-
-      mipCount = levels.length || 1;
-      currentMip = 0;
-      mipSlider.min = 0;
-      mipSlider.max = Math.max(0, mipCount - 1);
-      mipSlider.value = 0;
-      mipLabel.textContent = '0';
-      mipControls.style.display = mipCount > 1 ? 'block' : 'none';
-
-      srcView = srcTex.createView();
-      if (texPipeline) texBindGroup = makeTexBindGroup();
-
-      // Build metadata object for texture info panel
-      const compressionName = window.getSupercompressionName ? 
-        window.getSupercompressionName(header.supercompressionScheme) : 
-        (header.supercompressionScheme === 0 ? 'None' : `Scheme ${header.supercompressionScheme}`);
-      
-      const metadata = {
-        supercompression: compressionName
-      };
-      
-      if (kvd && Object.keys(kvd).length > 0) {
-        let kvdStr = Object.keys(kvd).join(', ');
-        if (kvd.KTXorientation) kvdStr += ` (orientation: ${kvd.KTXorientation})`;
-        metadata.kvd = kvdStr;
-      }
-      
-      if (dfd) {
-        metadata.dfd = `colorModel=${dfd.colorModel}, transfer=${dfd.transferFunction}`;
-      }
-      
-      stat.textContent = `Loaded ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${mipCount} mip${mipCount>1?'s':''})`;
-      meta.textContent = '';  // Clear old meta display
-      
-      // Update texture info panel with metadata
-      updateTextureInfo(file.size, header.pixelWidth, header.pixelHeight, formatName, mipCount, file.name, metadata);
-      
-      logApp(`Successfully loaded KTX2 ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${formatName}, ${mipCount} mips)`, 'success');
+      return (sign << 15) | (exp << 10) | mant;
     }
+
+    function convertRGBA32FtoRGBA16F(src, width, height) {
+      const pixelCount = width * height;
+      const dst = new Uint16Array(pixelCount * 4); // 4 channels
+
+      const f32 = new Float32Array(src.buffer, src.byteOffset, pixelCount * 4);
+
+      for (let i = 0; i < pixelCount * 4; i++) {
+          dst[i] = float32ToFloat16(f32[i]);
+      }
+      return new Uint8Array(dst.buffer);
+    }
+
+    async function loadKTX2_ToTexture(file) {
+        if (!bcSupported) {
+          logApp('BC compressed textures not supported on this device.', 'error');
+          throw new Error('BC compressed textures not supported on this device.');
+        }
+        
+        logApp(`Loading KTX2 ${file.name}...`, 'info');
+        await waitForKTXParser();
+
+        const buf = await file.arrayBuffer();
+        const { header, levels, dfd, kvd } = await window.parseKTX2(buf);
+
+        const is2D = header.pixelDepth === 0 && header.faceCount === 1;
+        if (!is2D) {
+          logApp('Only 2D, 1-face KTX2 supported in this demo.', 'error');
+          throw new Error('Only 2D, 1-face KTX2 supported in this demo.');
+        }
+
+        const formatInfo = window.vkFormatToWebGPU(header.vkFormat);
+        if (!formatInfo) throw new Error(`Unsupported vkFormat ${header.vkFormat}`);
+
+        const isBlock = !!formatInfo.blockWidth; // BC formats
+        const isPixel = !!formatInfo.bytesPerPixel; // uncompressed
+
+        const { format: wgpuFormat, blockWidth, blockHeight, bytesPerBlock } = formatInfo;
+        const formatName = window.getFormatName ? window.getFormatName(header.vkFormat) : `vkFormat ${header.vkFormat}`;
+
+        if (
+            formatInfo.format.startsWith("etc2") &&
+            !adapter.features.has("texture-compression-etc2")
+        ) {
+            throw new Error("ETC2 textures are not supported on this GPU/browser.");
+        }
+
+        srcTex?.destroy?.();
+        srcTex = device.createTexture({
+          size: { width: header.pixelWidth, height: header.pixelHeight, depthOrArrayLayers: 1 },
+          format: wgpuFormat,
+          mipLevelCount: levels.length,
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+        });
+
+        srcView = srcTex.createView();
+
+        if (texPipeline) {
+            texBindGroup = makeTexBindGroup();
+        }
+
+        
+        for (let i = 0; i < levels.length; i++) {
+
+          const lvl = levels[i];
+          if (isPixel) {
+            let raw = window.getLevelData(buf, lvl);
+
+            if (formatInfo.sourceChannels === 3) {
+                const pixelCount = lvl.width * lvl.height;
+                const rgba = new Uint8Array(pixelCount * 4);
+
+                for (let p = 0; p < pixelCount; p++) {
+                    rgba[p*4+0] = raw[p*3+0];
+                    rgba[p*4+1] = raw[p*3+1];
+                    rgba[p*4+2] = raw[p*3+2];
+                    rgba[p*4+3] = 255;
+                }
+                raw = rgba;
+            }
+
+            if (formatInfo.sourceBytesPerPixel === 16 && formatInfo.bytesPerPixel === 8) {
+                // Convert float32 → float16 per component
+                raw = convertRGBA32FtoRGBA16F(raw, lvl.width, lvl.height);
+            }
+
+
+            // Compute row padding
+            const { data, bytesPerRow } = padRows(
+                raw,
+                lvl.width,
+                lvl.height,
+                formatInfo.bytesPerPixel
+            );
+
+            device.queue.writeTexture(
+                { texture: srcTex, mipLevel: i },
+                data,
+                { bytesPerRow },
+                { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 }
+            );
+
+            continue; // Skip BC path
+          }
+
+          const raw = window.getLevelData(buf, lvl);
+          const { data, bytesPerRow, rowsPerImage } =
+            padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, blockWidth, blockHeight);
+          const uploadWidth = Math.ceil(lvl.width / blockWidth) * blockWidth;
+          const uploadHeight = Math.ceil(lvl.height / blockHeight) * blockHeight;
+          device.queue.writeTexture(
+            { texture: srcTex, mipLevel: i },
+            data,
+            { bytesPerRow, rowsPerImage },
+            { width: uploadWidth, height: uploadHeight, depthOrArrayLayers: 1 }
+          );
+        }
+
+        mipCount = levels.length || 1;
+        currentMip = 0;
+        mipSlider.min = 0;
+        mipSlider.max = Math.max(0, mipCount - 1);
+        mipSlider.value = 0;
+        mipLabel.textContent = '0';
+        mipControls.style.display = mipCount > 1 ? 'block' : 'none';
+
+        // Build metadata object for texture info panel
+        const compressionName = window.getSupercompressionName ? 
+          window.getSupercompressionName(header.supercompressionScheme) : 
+          (header.supercompressionScheme === 0 ? 'None' : `Scheme ${header.supercompressionScheme}`);
+        
+        const metadata = {
+          supercompression: compressionName
+        };
+        
+        if (kvd && Object.keys(kvd).length > 0) {
+          let kvdStr = Object.keys(kvd).join(', ');
+          if (kvd.KTXorientation) kvdStr += ` (orientation: ${kvd.KTXorientation})`;
+          metadata.kvd = kvdStr;
+        }
+        
+        if (dfd) {
+          metadata.dfd = `colorModel=${dfd.colorModel}, transfer=${dfd.transferFunction}`;
+        }
+        
+        stat.textContent = `Loaded ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${mipCount} mip${mipCount>1?'s':''})`;
+        meta.textContent = '';  // Clear old meta display
+        
+        // Update texture info panel with metadata
+        updateTextureInfo(file.size, header.pixelWidth, header.pixelHeight, formatName, mipCount, file.name, metadata);
+        
+        logApp(`Successfully loaded KTX2 ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${formatName}, ${mipCount} mips)`, 'success');
+      }
 
     fileInp.addEventListener('change', async () => {
       const f = fileInp.files?.[0];

@@ -153,6 +153,39 @@ function vkFormatToWebGPU(vkFormat) {
     // BC7 - 4x4 blocks, 16 bytes per block
     145: { format: 'bc7-rgba-unorm', blockWidth: 4, blockHeight: 4, bytesPerBlock: 16 },
     146: { format: 'bc7-rgba-unorm-srgb', blockWidth: 4, blockHeight: 4, bytesPerBlock: 16 },
+
+    // --- MOBILE FORMATS ---
+
+    // ETC2 formats
+    152: { format: "etc2-rgb8unorm",  blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 },
+    153: { format: "etc2-rgb8a1unorm", blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 },
+    154: { format: "etc2-rgba8unorm", blockWidth: 4, blockHeight: 4, bytesPerBlock: 16 },
+
+    // --- UNCOMPRESSED FORMATS ---
+
+    // RGB8 (UNORM & SRGB) — source data is 3-channel, must be expanded to RGBA8
+    23: { format: 'rgba8unorm',       bytesPerPixel: 4, sourceChannels: 3 },
+    24: { format: 'rgba8unorm-srgb',  bytesPerPixel: 4, sourceChannels: 3 },
+    29: { format: 'rgba8unorm',       bytesPerPixel: 4, sourceChannels: 3 },
+
+    // RGBA8
+    37: { format: 'rgba8unorm',      bytesPerPixel: 4 },
+    43: { format: 'rgba8unorm-srgb', bytesPerPixel: 4 },
+
+    // RGBA16F — 8 bytes per pixel
+    97: { format: 'rgba16float', bytesPerPixel: 8 },
+
+    // RGBA32F — convert float32 → float16 first
+    109: { format: 'rgba16float', bytesPerPixel: 8, sourceBytesPerPixel: 16 },
+
+    // R11G11B10 UFLOAT
+    100: { format: 'rg11b10ufloat', bytesPerPixel: 4 },
+    122: { format: "rg11b10ufloat", bytesPerPixel: 4 },
+
+    // RGB9E5 UFLOAT
+    99:  { format: 'rgb9e5ufloat', bytesPerPixel: 4 },
+    123: { format: 'rgb9e5ufloat', bytesPerPixel: 4 },
+
   };
   
   return formats[vkFormat] || null;
