@@ -275,7 +275,10 @@ async function waitForKTXParser() {
         'bc4-r-unorm': 0.5,     // 4 bits per pixel
         'bc5-rg-unorm': 1,      // 8 bits per pixel
         'bc6h-rgb-ufloat': 1,   // 8 bits per pixel
-        'bc7-rgba-unorm': 1     // 8 bits per pixel
+        'bc7-rgba-unorm': 1,     // 8 bits per pixel
+        'etc2-rgb8unorm': 0.5,   // 4 bits per pixel
+        'etc2-rgb8a1unorm': 0.5, // 4 bits per pixel
+        'etc2-rgba8unorm': 1     // 8 bits per pixel
       };
 
       const bytesPerPixel = formatSizes[format] || 4;
@@ -569,11 +572,6 @@ async function waitForKTXParser() {
     }
 
     async function loadKTX2_ToTexture(file) {
-        if (!bcSupported) {
-          logApp('BC compressed textures not supported on this device.', 'error');
-          throw new Error('BC compressed textures not supported on this device.');
-        }
-        
         logApp(`Loading KTX2 ${file.name}...`, 'info');
         await waitForKTXParser();
 
@@ -586,20 +584,31 @@ async function waitForKTXParser() {
           throw new Error('Only 2D, 1-face KTX2 supported in this demo.');
         }
 
-        const formatInfo = window.vkFormatToWebGPU(header.vkFormat);
+        let formatInfo = window.vkFormatToWebGPU(header.vkFormat);
         if (!formatInfo) throw new Error(`Unsupported vkFormat ${header.vkFormat}`);
 
-        const isBlock = !!formatInfo.blockWidth; // BC formats
+        logApp(`vkFormat ${header.vkFormat} initial: ${formatInfo.format}, ${formatInfo.bytesPerBlock} bytes/block`, 'info');
+
+        // Apply DFD corrections - DFD is authoritative over vkFormat
+        formatInfo = window.applyDFDCorrections(formatInfo, dfd, header.vkFormat);
+        
+        logApp(`After DFD correction: ${formatInfo.format}, ${formatInfo.bytesPerBlock} bytes/block`, 'info');
+
+        const isBlock = !!formatInfo.blockWidth; // BC/ETC formats
         const isPixel = !!formatInfo.bytesPerPixel; // uncompressed
 
         const { format: wgpuFormat, blockWidth, blockHeight, bytesPerBlock } = formatInfo;
         const formatName = window.getFormatName ? window.getFormatName(header.vkFormat) : `vkFormat ${header.vkFormat}`;
 
-        if (
-            formatInfo.format.startsWith("etc2") &&
-            !adapter.features.has("texture-compression-etc2")
-        ) {
-            throw new Error("ETC2 textures are not supported on this GPU/browser.");
+        // Check format support
+        if (formatInfo.format.startsWith("bc") && !supportsBC) {
+            logApp('BC compressed textures not supported on this device.', 'error');
+            throw new Error('BC compressed textures not supported on this device.');
+        }
+
+        if (formatInfo.format.startsWith("etc2") && !supportsETC2) {
+            logApp('ETC2 textures not supported on this device.', 'error');
+            throw new Error('ETC2 textures are not supported on this GPU/browser.');
         }
 
         srcTex?.destroy?.();
@@ -616,10 +625,10 @@ async function waitForKTXParser() {
             texBindGroup = makeTexBindGroup();
         }
 
-        
+        // Upload each mip level
         for (let i = 0; i < levels.length; i++) {
-
           const lvl = levels[i];
+          
           if (isPixel) {
             let raw = window.getLevelData(buf, lvl);
 
@@ -641,7 +650,6 @@ async function waitForKTXParser() {
                 raw = convertRGBA32FtoRGBA16F(raw, lvl.width, lvl.height);
             }
 
-
             // Compute row padding
             const { data, bytesPerRow } = padRows(
                 raw,
@@ -657,14 +665,16 @@ async function waitForKTXParser() {
                 { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 }
             );
 
-            continue; // Skip BC path
+            continue; // Skip BC/ETC path
           }
 
+          // Block-compressed path (BC and ETC2)
           const raw = window.getLevelData(buf, lvl);
           const { data, bytesPerRow, rowsPerImage } =
             padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, blockWidth, blockHeight);
           const uploadWidth = Math.ceil(lvl.width / blockWidth) * blockWidth;
           const uploadHeight = Math.ceil(lvl.height / blockHeight) * blockHeight;
+          
           device.queue.writeTexture(
             { texture: srcTex, mipLevel: i },
             data,
@@ -698,13 +708,16 @@ async function waitForKTXParser() {
         
         if (dfd) {
           metadata.dfd = `colorModel=${dfd.colorModel}, transfer=${dfd.transferFunction}`;
+          if (dfd.bytesPlane && dfd.bytesPlane[0]) {
+            metadata.dfd += `, bytesPerBlock=${dfd.bytesPlane[0]}`;
+          }
         }
         
         stat.textContent = `Loaded ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${mipCount} mip${mipCount>1?'s':''})`;
         meta.textContent = '';  // Clear old meta display
         
         // Update texture info panel with metadata
-        updateTextureInfo(file.size, header.pixelWidth, header.pixelHeight, formatName, mipCount, file.name, metadata);
+        updateTextureInfo(file.size, header.pixelWidth, header.pixelHeight, wgpuFormat, mipCount, file.name, metadata);
         
         logApp(`Successfully loaded KTX2 ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${formatName}, ${mipCount} mips)`, 'success');
       }

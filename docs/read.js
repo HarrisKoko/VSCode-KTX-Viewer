@@ -156,7 +156,8 @@ function vkFormatToWebGPU(vkFormat) {
 
     // --- MOBILE FORMATS ---
 
-    // ETC2 formats
+    // ETC2 formats - 4x4 blocks
+    // Note: bytesPerBlock here is initial value, will be overridden by DFD if present
     152: { format: "etc2-rgb8unorm",  blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 },
     153: { format: "etc2-rgb8a1unorm", blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 },
     154: { format: "etc2-rgba8unorm", blockWidth: 4, blockHeight: 4, bytesPerBlock: 16 },
@@ -191,6 +192,44 @@ function vkFormatToWebGPU(vkFormat) {
   return formats[vkFormat] || null;
 }
 
+// Apply DFD corrections to format info
+// The DFD (Data Format Descriptor) is authoritative over vkFormat header field
+function applyDFDCorrections(formatInfo, dfd, vkFormat) {
+  if (!formatInfo || !dfd) return formatInfo;
+  
+  // For block-compressed formats, trust DFD bytesPlane[0] over vkFormat
+  if (formatInfo.blockWidth && dfd.bytesPlane && dfd.bytesPlane[0]) {
+    const dfdBytesPerBlock = dfd.bytesPlane[0];
+    
+    if (dfdBytesPerBlock !== formatInfo.bytesPerBlock) {
+      console.warn(`vkFormat ${vkFormat} claims ${formatInfo.bytesPerBlock} bytes/block, but DFD says ${dfdBytesPerBlock}. Using DFD value.`);
+      
+      // Update bytes per block - THIS IS THE KEY FIX
+      formatInfo.bytesPerBlock = dfdBytesPerBlock;
+      
+      // For ETC2 formats, fix the WebGPU format string based on actual size
+      if (vkFormat >= 152 && vkFormat <= 154) {
+        if (dfdBytesPerBlock === 8) {
+          // ETC2 RGB or RGB with 1-bit alpha
+          if (dfd.colorModel === 160) {
+            formatInfo.format = 'etc2-rgb8unorm';
+          } else if (dfd.colorModel === 162) {
+            formatInfo.format = 'etc2-rgb8a1unorm';
+          } else {
+            // Default to RGB if colorModel is unclear
+            formatInfo.format = 'etc2-rgb8unorm';
+          }
+        } else if (dfdBytesPerBlock === 16) {
+          // ETC2 RGBA with full alpha
+          formatInfo.format = 'etc2-rgba8unorm';
+        }
+      }
+    }
+  }
+  
+  return formatInfo;
+}
+
 // Get human-readable format name
 function getFormatName(vkFormat) {
   const names = {
@@ -201,6 +240,7 @@ function getFormatName(vkFormat) {
     141: 'BC5 (RGTC2) UNORM', 142: 'BC5 (RGTC2) SNORM',
     143: 'BC6H UFLOAT', 144: 'BC6H FLOAT',
     145: 'BC7 UNORM', 146: 'BC7 SRGB',
+    152: 'ETC2 RGB8', 153: 'ETC2 RGB8A1', 154: 'ETC2 RGBA8',
   };
   return names[vkFormat] || `VK Format ${vkFormat}`;
 }
@@ -218,6 +258,7 @@ function getSupercompressionName(scheme) {
 // Expose functions
 window.parseKTX2 = parseKTX2;
 window.vkFormatToWebGPU = vkFormatToWebGPU;
+window.applyDFDCorrections = applyDFDCorrections;
 window.getFormatName = getFormatName;
 window.getSupercompressionName = getSupercompressionName;
 window.parseDFD = parseDFD;
