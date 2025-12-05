@@ -585,7 +585,12 @@ async function waitForKTXParser() {
         }
 
         let formatInfo = window.vkFormatToWebGPU(header.vkFormat);
-        if (!formatInfo) throw new Error(`Unsupported vkFormat ${header.vkFormat}`);
+        logApp(`Looking up vkFormat ${header.vkFormat}...`, 'info');
+        if (!formatInfo) {
+            logApp(`ERROR: vkFormat ${header.vkFormat} not found in format table!`, 'error');
+            throw new Error(`Unsupported vkFormat ${header.vkFormat}`);
+        }
+        logApp(`Found format: ${formatInfo.format}`, 'success');
 
         logApp(`vkFormat ${header.vkFormat} initial: ${formatInfo.format}, ${formatInfo.bytesPerBlock} bytes/block`, 'info');
 
