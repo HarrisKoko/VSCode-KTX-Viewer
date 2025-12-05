@@ -607,8 +607,9 @@ async function waitForKTXParser() {
         }
 
         if (formatInfo.format.startsWith("etc2") && !supportsETC2) {
-            logApp('ETC2 textures not supported on this device.', 'error');
-            throw new Error('ETC2 textures are not supported on this GPU/browser.');
+            logApp('ETC2 not natively supported - will need software transcode/decode', 'warn');
+            // TODO: Add software fallback transcoding here for desktop GPUs
+            throw new Error('ETC2 textures not supported on this GPU. Software transcoding not yet implemented.');
         }
 
         srcTex?.destroy?.();

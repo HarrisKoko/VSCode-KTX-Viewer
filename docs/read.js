@@ -156,6 +156,11 @@ function vkFormatToWebGPU(vkFormat) {
 
     // --- MOBILE FORMATS ---
 
+    // ETC1 formats - 4x4 blocks, 8 bytes per block (RGB only, no alpha)
+    // Note: WebGPU doesn't have native ETC1, but we can use ETC2 which is backward compatible
+    148: { format: "etc2-rgb8unorm", blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 }, // ETC1 RGB
+    149: { format: "etc2-rgb8unorm-srgb", blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 }, // ETC1 RGB sRGB
+
     // ETC2 formats - 4x4 blocks
     // Note: bytesPerBlock here is initial value, will be overridden by DFD if present
     152: { format: "etc2-rgb8unorm",  blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 },
@@ -208,9 +213,10 @@ function applyDFDCorrections(formatInfo, dfd, vkFormat) {
       formatInfo.bytesPerBlock = dfdBytesPerBlock;
       
       // For ETC2 formats, fix the WebGPU format string based on actual size
-      if (vkFormat >= 152 && vkFormat <= 154) {
+      // Also handles ETC1 (148-149) which WebGPU maps to ETC2
+      if (vkFormat >= 148 && vkFormat <= 154) {
         if (dfdBytesPerBlock === 8) {
-          // ETC2 RGB or RGB with 1-bit alpha
+          // ETC1/ETC2 RGB or RGB with 1-bit alpha
           if (dfd.colorModel === 160) {
             formatInfo.format = 'etc2-rgb8unorm';
           } else if (dfd.colorModel === 162) {
@@ -240,6 +246,7 @@ function getFormatName(vkFormat) {
     141: 'BC5 (RGTC2) UNORM', 142: 'BC5 (RGTC2) SNORM',
     143: 'BC6H UFLOAT', 144: 'BC6H FLOAT',
     145: 'BC7 UNORM', 146: 'BC7 SRGB',
+    148: 'ETC1 RGB', 149: 'ETC1 RGB SRGB',
     152: 'ETC2 RGB8', 153: 'ETC2 RGB8A1', 154: 'ETC2 RGBA8',
   };
   return names[vkFormat] || `VK Format ${vkFormat}`;
