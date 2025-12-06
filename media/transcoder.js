@@ -130,6 +130,7 @@ async function decodeUASTCToRGBA(wasmUrl, uastcBlocks, width, height) {
  * Transcode entire KTX2 file (handles Basis Universal supercompression)
  */
 async function transcodeFullKTX2(fileBuffer) {
+  logApp("Transcoding KTX2 with libktx...");
   const m = await initLibKTX();
 
   let texture = null;
@@ -211,7 +212,6 @@ const NATIVE_BC_FORMATS = {
   141: 'bc5-rg-unorm', 142: 'bc5-rg-snorm',
   143: 'bc6h-rgb-ufloat', 144: 'bc6h-rgb-float',
   145: 'bc7-rgba-unorm', 146: 'bc7-rgba-unorm-srgb',
-  //152: 'etc2-rgba8unorm', 153: 'etc2-rgba8unorm-srgb',
 };
 
 function checkFormatRequirements(vkFormat) {

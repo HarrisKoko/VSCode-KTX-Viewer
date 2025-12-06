@@ -89,7 +89,7 @@ async function loadFzstd() {
 }
 
 // -----------------------------------------------------------------------------
-// Basis Universal Transcoder Loader — FIXED
+// Basis Universal Transcoder Loader
 // -----------------------------------------------------------------------------
 let basisModulePromise = null;
 let BasisModule = null;
@@ -100,21 +100,27 @@ async function loadBasisModule() {
   basisModulePromise = new Promise(async (resolve, reject) => {
     try {
       // 1. Load JS file by script tag
+      logApp("Loading basis_transcoder.js...");
       await loadScript("media/basisu/basis_transcoder.js");
 
+      const basisFactory =
+        window.BasisModule ||
+        window.Module ||
+        window.createBasisModule;
+
       // Ensure global BasisModule function exists
-      if (typeof BasisModule !== "function") {
+      if (typeof basisFactory !== "function") {
+        logApp("basis_transcoder.js did not define BasisModule", "error");
         return reject(new Error("basis_transcoder.js did not define BasisModule"));
       }
 
       // 2. Load WASM binary
+      logApp("Loading basis_transcoder.wasm...");
       const wasmBinary = await fetch("media/basisu/basis_transcoder.wasm")
         .then(r => r.arrayBuffer());
 
-      // 3. Initialize module
-      BasisModule({
-        wasmBinary
-      }).then(mod => {
+      logApp("Initializing BasisModule...");
+      basisFactory({ wasmBinary }).then(mod => {
         BasisModule = mod;
         resolve(mod);
       }).catch(reject);
@@ -243,8 +249,18 @@ async function parseKTX2(arrayBuffer) {
   } else if (header.supercompressionScheme === SUPERCOMPRESSION_BASIS_LZ) { // This means ETC1S or UASTC
     logApp("Detected BASIS-LZ texture (ETC1S or UASTC)");
 
+    
+
+
     // Load transcoder
-    await loadBasisModule();
+    // await loadBasisModule();
+
+    const BASIS = await loadBasisModule(); // loads wasm
+    logApp("FINISHED LOADING BASIS", "success");
+    const file = new BASIS.KTX2File(new Uint8Array(data));
+    console.log("supports KTX2?", file.isValid());
+    logApp("Basis file valid: " + file.isValid());
+    
 
     const basisFile = makeBasisFile(
       new Uint8Array(arrayBuffer, levels[0].byteOffset, levels[0].byteLength)
