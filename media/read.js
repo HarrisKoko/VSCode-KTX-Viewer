@@ -161,6 +161,9 @@ function vkFormatToWebGPU(vkFormat) {
     153: { format: "etc2-rgb8a1unorm", blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 },
     154: { format: "etc2-rgba8unorm", blockWidth: 4, blockHeight: 4, bytesPerBlock: 16 },
 
+    157: { format: 'astc-4x4-unorm',      blockWidth: 4, blockHeight: 4, bytesPerBlock: 16 },
+    158: { format: 'astc-4x4-unorm-srgb', blockWidth: 4, blockHeight: 4, bytesPerBlock: 16 },
+
     // --- UNCOMPRESSED FORMATS ---
 
     // RGB8 (UNORM & SRGB) — 3 bytes per pixel
@@ -205,6 +208,8 @@ function getFormatName(vkFormat) {
     141: 'BC5 (RGTC2) UNORM', 142: 'BC5 (RGTC2) SNORM',
     143: 'BC6H UFLOAT', 144: 'BC6H FLOAT',
     145: 'BC7 UNORM', 146: 'BC7 SRGB',
+    157: 'ASTC 4x4 UNORM',
+    158: 'ASTC 4x4 SRGB',
     23:  'RGB8 UNORM',
     24:  'RGB8 SRGB',
     29:  'RGB8 SRGB',

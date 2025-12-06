@@ -200,13 +200,17 @@ async function waitForKTXParser() {
     
     const supportsBC   = adapter.features.has("texture-compression-bc");
     const supportsETC2 = adapter.features.has("texture-compression-etc2");
+    const supportsASTC = adapter.features.has("texture-compression-astc");
 
     console.log("BC supported?", supportsBC);
     console.log("ETC2 supported?", supportsETC2);
+    console.log("ASTC supported?", supportsASTC);
+
 
     const requiredFeatures = [];
     if (supportsBC)   requiredFeatures.push("texture-compression-bc");
     if (supportsETC2) requiredFeatures.push("texture-compression-etc2");
+    if (supportsASTC) requiredFeatures.push("texture-compression-astc");
 
     const device = await adapter.requestDevice({ requiredFeatures });
 
@@ -615,6 +619,11 @@ async function waitForKTXParser() {
             logApp('ETC2 not natively supported - will need software transcode/decode', 'warn');
             // TODO: Add software fallback transcoding here for desktop GPUs
             throw new Error('ETC2 textures not supported on this GPU. Software transcoding not yet implemented.');
+        }
+
+        if (formatInfo.format.startsWith("astc") && !supportsASTC) {
+            logApp('ASTC textures not supported on this device.', 'error');
+            throw new Error("ASTC textures are not supported on this GPU/browser.");
         }
 
         srcTex?.destroy?.();

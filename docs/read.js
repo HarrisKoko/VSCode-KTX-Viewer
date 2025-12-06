@@ -167,7 +167,21 @@ function vkFormatToWebGPU(vkFormat) {
     152: { format: "etc2-rgb8unorm",  blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 },
     153: { format: "etc2-rgb8a1unorm", blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 },
     154: { format: "etc2-rgba8unorm", blockWidth: 4, blockHeight: 4, bytesPerBlock: 16 },
-
+    
+    // ASTC UNORM
+    157: { format: 'astc-4x4-unorm', blockWidth:4, blockHeight:4, bytesPerBlock:16 },
+    159: { format: 'astc-5x4-unorm', blockWidth:5, blockHeight:4, bytesPerBlock:16 },
+    161: { format: 'astc-5x5-unorm', blockWidth:5, blockHeight:5, bytesPerBlock:16 },
+    163: { format: 'astc-6x5-unorm', blockWidth:6, blockHeight:5, bytesPerBlock:16 },
+    165: { format: 'astc-6x6-unorm', blockWidth:6, blockHeight:6, bytesPerBlock:16 },
+    
+    // ASTC sRGB
+    158: { format: 'astc-4x4-unorm-srgb', blockWidth:4, blockHeight:4, bytesPerBlock:16 },
+    160: { format: 'astc-4x4-unorm-srgb', blockWidth: 4, blockHeight: 4, bytesPerBlock: 16 },
+    162: { format: 'astc-5x5-unorm-srgb', blockWidth:5, blockHeight:5, bytesPerBlock:16 },
+    164: { format: 'astc-6x5-unorm-srgb', blockWidth:6, blockHeight:5, bytesPerBlock:16 },
+    166: { format: 'astc-6x6-unorm-srgb', blockWidth:6, blockHeight:6, bytesPerBlock:16 },
+    
     // --- UNCOMPRESSED FORMATS ---
 
     // RGB8 (UNORM & SRGB) — source data is 3-channel, must be expanded to RGBA8
@@ -251,6 +265,8 @@ function getFormatName(vkFormat) {
     145: 'BC7 UNORM', 146: 'BC7 SRGB',
     148: 'ETC1 RGB', 149: 'ETC1 RGB SRGB',
     152: 'ETC2 RGB8', 153: 'ETC2 RGB8A1', 154: 'ETC2 RGBA8',
+    157: 'ASTC 4x4 UNORM', 158: 'ASTC 4x4 SRGB',
+    160: 'ASTC 4x4 SRGB',
   };
   return names[vkFormat] || `VK Format ${vkFormat}`;
 }

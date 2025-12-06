@@ -181,13 +181,16 @@
 
       const supportsBC   = adapter.features.has("texture-compression-bc");
       const supportsETC2 = adapter.features.has("texture-compression-etc2");
+      const supportsASTC = adapter.features.has("texture-compression-astc");
 
       console.log("BC supported?", supportsBC);
       console.log("ETC2 supported?", supportsETC2);
+      console.log("ASTC supported?", supportsASTC);
 
       const requiredFeatures = [];
       if (supportsBC)   requiredFeatures.push("texture-compression-bc");
       if (supportsETC2) requiredFeatures.push("texture-compression-etc2");
+      if (supportsASTC) requiredFeatures.push("texture-compression-astc");
 
       const device = await adapter.requestDevice({ requiredFeatures });
 
@@ -613,6 +616,13 @@
             !adapter.features.has("texture-compression-etc2")
         ) {
             throw new Error("ETC2 textures are not supported on this GPU/browser.");
+        }
+
+        if (
+            formatInfo.format.startsWith("astc") &&
+            !adapter.features.has("texture-compression-astc")
+        ) {
+            throw new Error("ASTC textures are not supported on this GPU/browser.");
         }
 
         srcTex?.destroy?.();
