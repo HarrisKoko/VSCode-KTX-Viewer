@@ -191,32 +191,28 @@ function makeBasisFile(u8) {
   return new BasisModule.BasisFile(u8);
 }
 
-// Choose GPU target (fixed)
 function getBasisTargetFormatForGPU(device) {
-  // --- FIX START: Update Standard IDs ---
-  // Standard Basis Universal enum values:
-  // 0=ETC1, 1=ETC2, 2=BC1, 3=BC3, 4=BC4, 5=BC5, 6=BC7, 13=RGBA32
-  const TF_BC7_RGBA = 2;  // CHANGED FROM 3 TO 6
-  const TF_RGBA32 = 13;
-  // --------------------------------------
+  const BASIS_FORMAT = {
+    BC1_RGB: 0,
+    BC3_RGBA: 1,
+    BC4_R: 2,
+    BC5_RG: 3,
+    BC7_RGBA: 6,
+    RGBA32: 13
+  };
 
-  // Try to find explicit exports, otherwise fallback to our corrected constants
-  const valBC7 = (BasisModule.cTFBC7_RGBA !== undefined) ? BasisModule.cTFBC7_RGBA 
-               : (BasisModule.TranscodeTarget?.BC7_RGBA || TF_BC7_RGBA);
-
-  const valRGBA32 = (BasisModule.cTFRGBA32 !== undefined) ? BasisModule.cTFRGBA32 
-                  : (BasisModule.TranscodeTarget?.RGBA32 || TF_RGBA32);
-
-  // Debug log to confirm we are using ID 6 now
-  console.log(`[read.js] Format IDs available - BC7: ${valBC7}, RGBA32: ${valRGBA32}`);
+  // TEMPORARY TEST: Always use RGBA32
+  console.log(`[read.js] Requesting RGBA32 (ID: ${BASIS_FORMAT.RGBA32})`);
+  return BASIS_FORMAT.RGBA32;
 
   if (device.features.has("texture-compression-bc")) {
-    console.log(`[read.js] Requesting Format: BC7 (ID: ${valBC7})`);
-    return valBC7; 
+    // Use BC1 for RGB textures (more efficient)
+    console.log(`[read.js] Requesting BC1 (ID: ${BASIS_FORMAT.BC1_RGB})`);
+    return BASIS_FORMAT.BC1_RGB;
   }
 
-  console.log(`[read.js] Requesting Format: RGBA32 (ID: ${valRGBA32})`);
-  return valRGBA32;
+  console.log(`[read.js] Requesting RGBA32 (ID: ${BASIS_FORMAT.RGBA32})`);
+  return BASIS_FORMAT.RGBA32;
 }
 
 
@@ -378,67 +374,116 @@ async function parseKTX2(arrayBuffer, device) {
     const safeLevelCount = Math.min(levels.length, transcoderLevelCount);
 
     for (let i = 0; i < safeLevelCount; i++) {
-        const levelIndex = i;
-        let dst = null;
-        let status = false;
+    const levelIndex = i;
+    let dst = null;
+    let status = false;
 
-        try {
-            if (isKTX2File) {
-                // KTX2File Path
-                const layerIndex = 0;
-                const faceIndex = 0;
-                
-                const size = isKTX2File 
-                ? basisFile.getImageTranscodedSizeInBytes(imageIndex, levelIndex, 0, 0, format)
-                : basisFile.getImageTranscodedSizeInBytes(imageIndex, levelIndex, format);
+    try {
+        if (isKTX2File) {
+            const layerIndex = 0;
+            const faceIndex = 0;
+            
+            // Get size for this specific level
+            const size = basisFile.getImageTranscodedSizeInBytes(
+                levelIndex,  // Level comes FIRST for KTX2File
+                layerIndex, 
+                faceIndex,
+                format
+            );
 
-                // --- DEBUG LOG START ---
-                const width = levels[levelIndex].width;
-                const height = levels[levelIndex].height;
-                const expectedBC7 = Math.ceil(width/4) * Math.ceil(height/4) * 16;
-                const expectedRGBA = width * height * 4;
+            console.log(`   > Level ${levelIndex} transcode size: ${size} bytes`);
 
-                console.log(`[read.js] Level ${levelIndex} (${width}x${height}):`);
-                console.log(`   > Requested Format ID: ${format}`);
-                console.log(`   > WASM calculated size: ${size} bytes`);
-                console.log(`   > Expected if BC7:      ${expectedBC7} bytes`);
-                console.log(`   > Expected if RGBA32:   ${expectedRGBA} bytes`);
-                
-                if (size === expectedBC7) console.log("   > MATCH: WASM outputting BC7 size");
-                else if (size === expectedRGBA) console.log("   > MATCH: WASM outputting RGBA32 size");
-                else console.warn("   > MISMATCH: Size matches neither standard BC7 nor RGBA32!");
-
-                dst = new Uint8Array(size);
-                
-                status = basisFile.transcodeImage(
-                    dst, imageIndex, levelIndex, layerIndex, faceIndex, 
-                    format, 0, -1, -1
-                );
-            } else {
-                // BasisFile Path
-                const size = basisFile.getImageTranscodedSizeInBytes(
-                    imageIndex, levelIndex, format
-                );
-                dst = new Uint8Array(size);
-                
-                status = basisFile.transcodeImage(
-                    dst, imageIndex, levelIndex, format, 0, 0
-                );
+            if (size === 0) {
+                console.warn(`   > Size is 0, skipping level ${levelIndex}`);
+                break;
             }
-        } catch (err) {
-            console.warn(`Transcode warning on level ${i}:`, err);
-            status = false;
-        }
 
-        if (status && dst) {
-            levels[i].isDecompressed = true;
-            levels[i].decompressedData = dst;
-            levels[i].transcodedFormat = format;
+            dst = new Uint8Array(size);
+            
+            // Transcode - note parameter order!
+            status = basisFile.transcodeImage(
+                dst,
+                levelIndex,   // Level first
+                layerIndex,
+                faceIndex,
+                format,
+                0,  // pvrtc_wrap_addressing
+                0  // get_alpha_for_opaque_formats
+            );
+
+            // After successful transcode
+            if (i === 0 && format === 0) {
+                // Verify BC1 format: each 8-byte block encodes a 4x4 pixel region
+                // BC1 structure: 2 bytes color0 + 2 bytes color1 + 4 bytes indices
+                const block0 = dst.slice(0, 8);
+                console.log(`   > BC1 block 0 structure check:`, {
+                    color0: (block0[1] << 8) | block0[0],
+                    color1: (block0[3] << 8) | block0[2],
+                    indices: Array.from(block0.slice(4, 8))
+                });
+            }
+
+            if (status && dst && dst.length > 0) {
+              levels[i].isDecompressed = true;
+              levels[i].decompressedData = dst;
+              levels[i].transcodedFormat = format;
+              
+              // DEBUG: Check first few bytes of transcoded data
+              if (i === 0) {
+                  const preview = Array.from(dst.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                  console.log(`   > First 32 bytes: ${preview}`);
+              }
+              
+              console.log(`   > ✓ Level ${i} transcoded successfully (${dst.length} bytes)`);
+            }
         } else {
-            console.warn(`Failed to transcode level ${i}. Stopping mip chain.`);
-            break; // Stop trying deeper levels if one fails
+            // BasisFile Path
+            const size = basisFile.getImageTranscodedSizeInBytes(
+                imageIndex, levelIndex, format
+            );
+            
+            console.log(`   > Level ${levelIndex} transcode size: ${size} bytes`);
+            
+            if (size === 0) {
+                console.warn(`   > Size is 0, skipping level ${levelIndex}`);
+                break;
+            }
+            
+            dst = new Uint8Array(size);
+            
+            status = basisFile.transcodeImage(
+                dst, imageIndex, levelIndex, format, 0, 0
+            );
+
+            if (status && dst && dst.length > 0) {
+              levels[i].isDecompressed = true;
+              levels[i].decompressedData = dst;
+              levels[i].transcodedFormat = format;
+              
+              // DEBUG: Check first few bytes of transcoded data
+              if (i === 0) {
+                  const preview = Array.from(dst.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                  console.log(`   > First 32 bytes: ${preview}`);
+              }
+              
+              console.log(`   > ✓ Level ${i} transcoded successfully (${dst.length} bytes)`);
+            }
         }
+    } catch (err) {
+        console.warn(`Transcode warning on level ${i}:`, err);
+        status = false;
     }
+
+    if (status && dst && dst.length > 0) {
+        levels[i].isDecompressed = true;
+        levels[i].decompressedData = dst;
+        levels[i].transcodedFormat = format;
+        console.log(`   > ✓ Level ${i} transcoded successfully (${dst.length} bytes)`);
+    } else {
+        console.warn(`Failed to transcode level ${i}. Stopping mip chain.`);
+        break;
+    }
+}
 
     basisFile.close();
     basisFile.delete(); 

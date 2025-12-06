@@ -94,23 +94,28 @@ function padRows(src, width, height, bytesPerPixel = 4) {
 }
 
 function padBlockRowsBC(src, width, height, bytesPerBlock, blockWidth = 4, blockHeight = 4) {
-  const wBlocks = Math.max(1, Math.ceil(width  / blockWidth));
+  const wBlocks = Math.max(1, Math.ceil(width / blockWidth));
   const hBlocks = Math.max(1, Math.ceil(height / blockHeight));
   const rowBytes = wBlocks * bytesPerBlock;
-
+  
+  // Calculate aligned row size (must be multiple of 256)
   const aligned = Math.ceil(rowBytes / 256) * 256;
+  
+  // If already aligned, return as-is
   if (aligned === rowBytes) {
     return { data: src, bytesPerRow: rowBytes, rowsPerImage: hBlocks };
   }
 
+  // Need to pad each row
   const dst = new Uint8Array(aligned * hBlocks);
   for (let y = 0; y < hBlocks; y++) {
-    const s0 = y * rowBytes, d0 = y * aligned;
-    dst.set(src.subarray(s0, s0 + rowBytes), d0);
+    const srcOffset = y * rowBytes;
+    const dstOffset = y * aligned;
+    dst.set(src.subarray(srcOffset, srcOffset + rowBytes), dstOffset);
   }
+  
   return { data: dst, bytesPerRow: aligned, rowsPerImage: hBlocks };
 }
-
 async function waitForKTXParser() {
   let tries = 0;
   while (typeof window.parseKTX2 !== 'function') {
@@ -800,7 +805,6 @@ const m = await initLibKTX();
         let basisFormatName = 'Basis Universal';
 
         if (levels[0] && levels[0].isDecompressed) {
-          
           stat.textContent = `Using pre-transcoded Basis data...`;
           
           const tf = levels[0].transcodedFormat; 
@@ -813,38 +817,34 @@ const m = await initLibKTX();
           console.log(`   > Actual Data Buffer Size: ${dataSize} bytes`);
           console.log(`   > Image Dimensions: ${w}x${h}`);
 
-          // --- FIX: Add handling for Format 2 (BC1) and 6 (BC7) ---
-          if (tf === 2) { 
-             // ID 2 = BC1 (cTFBC1_RGB)
-             // 8 bytes per 4x4 block
-             wgpuFormat = 'bc1-rgba-unorm'; 
-             blockWidth = 4; blockHeight = 4; bytesPerBlock = 8;
+          // Map format ID to WebGPU format
+          if (tf === 0) { 
+            // BC1 RGB (8 bytes per 4x4 block)
+            wgpuFormat = 'bc1-rgba-unorm'; 
+            blockWidth = 4; blockHeight = 4; bytesPerBlock = 8;
           } 
-          else if (tf === 3) {
-             // ID 3 = BC3 (cTFBC3_RGBA) - Standard DXT5
-             // 16 bytes per 4x4 block
-             wgpuFormat = 'bc3-rgba-unorm';
-             blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
+          else if (tf === 1) {
+            // BC3 RGBA (16 bytes per 4x4 block)
+            wgpuFormat = 'bc3-rgba-unorm';
+            blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
           } 
           else if (tf === 6) {
-             // ID 6 = BC7 (cTFBC7_RGBA)
-             // 16 bytes per 4x4 block
-             wgpuFormat = 'bc7-rgba-unorm';
-             blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
+            // BC7 RGBA (16 bytes per 4x4 block)
+            wgpuFormat = 'bc7-rgba-unorm';
+            blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
           } 
           else if (tf === 13) {
-             // ID 13 = Uncompressed RGBA32
-             wgpuFormat = 'rgba8unorm';
-             blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
+            // Uncompressed RGBA32
+            wgpuFormat = 'rgba8unorm';
+            blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
           } 
           else {
-             console.warn(`[main.js] Unknown Transcoded Format ID: ${tf}`);
-             // Default fallback (likely to look wrong if it wasn't RGBA)
-             wgpuFormat = 'rgba8unorm';
-             blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
+            console.warn(`[main.js] Unknown Transcoded Format ID: ${tf}`);
+            wgpuFormat = 'rgba8unorm';
+            blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
           }
 
-          // --- DEBUG VALIDATION ---
+          // Validate size
           const wBlocks = Math.ceil(w / blockWidth);
           const hBlocks = Math.ceil(h / blockHeight);
           const expectedBytes = wBlocks * hBlocks * bytesPerBlock;
@@ -855,16 +855,14 @@ const m = await initLibKTX();
           console.log(`   > Expected Payload: ${expectedBytes} bytes`);
 
           if (dataSize !== expectedBytes) {
-             console.error(`[main.js] CRITICAL MISMATCH: WebGPU expects ${expectedBytes} bytes but buffer has ${dataSize} bytes!`);
-             console.error(`   > This causes the visual corruption (stripes/padding).`);
+            console.error(`[main.js] CRITICAL MISMATCH: WebGPU expects ${expectedBytes} bytes but buffer has ${dataSize} bytes!`);
           } else {
-             console.log(`[main.js] ✓ Size check passed.`);
+            console.log(`[main.js] ✓ Size check passed.`);
           }
 
           transcodedLevels = null;
-          
-          logApp(`Texture already transcoded to ${wgpuFormat} by read.js`, 'success');
-
+          logApp(`Texture transcoded to ${wgpuFormat} (format ID ${tf})`, 'success');
+   
         } else {
           // If read.js didn't handle it, we would need libktx or another transcoder.
           // Since you want to avoid libktx, we throw an error here if read.js failed.
@@ -921,22 +919,43 @@ const m = await initLibKTX();
 
       // Upload mip levels
       for (let i = 0; i < mipCount; i++) {
-        const lvl = transcodedLevels ? transcodedLevels[i] : levels[i];
-        const raw = transcodedLevels 
-          ? transcodedLevels[i].data 
-          : window.getLevelData(buf, lvl); // not new Uint8Array(buf, lvl.byteOffset, lvl.byteLength); ?
-        const { data, bytesPerRow, rowsPerImage } =
-          padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, blockWidth, blockHeight);
-        const uploadWidth = Math.ceil(lvl.width / blockWidth) * blockWidth;
-        const uploadHeight = Math.ceil(lvl.height / blockHeight) * blockHeight;
+        const lvl = levels[i];
+        
+        // Get the data
+        let raw;
+        if (lvl.isDecompressed && lvl.decompressedData) {
+          raw = lvl.decompressedData;
+          console.log(`[main.js] Uploading level ${i}: ${raw.byteLength} bytes (transcoded)`);
+        } else {
+          raw = window.getLevelData(buf, lvl);
+          console.log(`[main.js] Uploading level ${i}: ${raw.byteLength} bytes (raw)`);
+        }
+        
+        const wBlocks = Math.max(1, Math.ceil(lvl.width / blockWidth));
+        const hBlocks = Math.max(1, Math.ceil(lvl.height / blockHeight));
+        const bytesPerRow = wBlocks * bytesPerBlock;
+        
+        // CRITICAL: For compressed textures, dimensions must be multiples of block size
+        const uploadWidth = wBlocks * blockWidth;   // Round up to block boundary
+        const uploadHeight = hBlocks * blockHeight;  // Round up to block boundary
+        
+        console.log(`[main.js] Level ${i}: uploading ${raw.byteLength} bytes (${lvl.width}x${lvl.height} → ${uploadWidth}x${uploadHeight}, ${bytesPerRow} bytes/row)`);
+        
         device.queue.writeTexture(
           { texture: srcTex, mipLevel: i },
-          data,
-          { bytesPerRow, rowsPerImage },
-          { width: uploadWidth, height: uploadHeight, depthOrArrayLayers: 1 }
+          raw,
+          { 
+            bytesPerRow: bytesPerRow,
+            rowsPerImage: hBlocks
+          },
+          { 
+            width: uploadWidth,    // Must be multiple of 4
+            height: uploadHeight,  // Must be multiple of 4
+            depthOrArrayLayers: 1 
+          }
         );
       }
-
+      
       mipCount = levels.length || 1;
       currentMip = 0;
       mipSlider.min = 0;
