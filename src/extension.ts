@@ -1,4 +1,3 @@
-// extension.ts
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -21,7 +20,10 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.ViewColumn.Beside,
         {
           enableScripts: true,
-          retainContextWhenHidden: true
+          retainContextWhenHidden: true,
+          localResourceRoots: [
+            vscode.Uri.joinPath(context.extensionUri, 'media')
+          ]
         }
       );
 
@@ -35,7 +37,14 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.Uri.joinPath(context.extensionUri, 'media', 'shaders.wgsl')
       );
 
-      // Handle messages from the webview
+      // NEW → Correctly expose JS + WASM for WebView
+      const customDecoderJs = panel.webview.asWebviewUri(
+        vscode.Uri.joinPath(context.extensionUri, "media", "ktx2_module.js")
+      );
+      const customDecoderWasm = panel.webview.asWebviewUri(
+        vscode.Uri.joinPath(context.extensionUri, "media", "ktx2_module.wasm")
+      );
+
       panel.webview.onDidReceiveMessage(
         async (message) => {
           switch (message.command) {
@@ -50,7 +59,7 @@ export function activate(context: vscode.ExtensionContext) {
 
       const nonce = getNonce();
 
-      // Load HTML templates from files
+      // Load HTML templates
       const htmlPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'webview.html');
       const sidebarPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'sidebar-template.html');
       
@@ -64,7 +73,11 @@ export function activate(context: vscode.ExtensionContext) {
         .replace(/\{\{readUri\}\}/g, readUri.toString())
         .replace(/\{\{scriptUri\}\}/g, scriptUri.toString())
         .replace(/\{\{shaderUri\}\}/g, shaderUri.toString())
-        .replace(/\{\{sidebarHtml\}\}/g, sidebarHtml.replace(/`/g, '\\`').replace(/\$/g, '\\$'));
+        .replace(/\{\{sidebarHtml\}\}/g, sidebarHtml.replace(/`/g, '\\`').replace(/\$/g, '\\$'))
+        
+        // NEW → Inject WASM + JS URIs into the HTML
+        .replace(/\{\{decoderJsUri\}\}/g, customDecoderJs.toString())
+        .replace(/\{\{decoderWasmUri\}\}/g, customDecoderWasm.toString());
 
       panel.webview.html = html;
     })
@@ -84,49 +97,35 @@ async function handleValidateGltf(
 
   try {
     console.log('Validating glTF file:', fileName);
-    
-    // Decode base64 to Uint8Array
+
     const binaryString = Buffer.from(base64Data, 'base64');
     const uint8Array = new Uint8Array(binaryString);
 
-    // Validate
     const result = await validator.validateBytes(uint8Array, {
       uri: fileName,
       maxIssues: 0,
       writeTimestamp: false,
       externalResourceFunction: async (resourceUri: string) => {
-        // For file input, we can't load external resources
         console.log('External resource requested:', resourceUri);
         throw new Error('External resources not supported for file input validation');
       }
     });
 
-    console.log('Validation complete:', result);
-
-    // Send results back to webview
     panel.webview.postMessage({
       command: 'validationResults',
       results: result
     });
 
-    // Also show notification
     const issues = result.issues?.messages || [];
     const errorCount = issues.filter((i: any) => i.severity === 0).length;
     const warningCount = issues.filter((i: any) => i.severity === 1).length;
 
-    if (errorCount > 0) {
-      vscode.window.showErrorMessage(
-        `glTF Validation: ${errorCount} error(s), ${warningCount} warning(s)`
-      );
-    } else if (warningCount > 0) {
-      vscode.window.showWarningMessage(
-        `glTF Validation: ${warningCount} warning(s)`
-      );
-    } else {
-      vscode.window.showInformationMessage(
-        `✓ Valid glTF: ${fileName}`
-      );
-    }
+    if (errorCount > 0)
+      vscode.window.showErrorMessage(`glTF Validation: ${errorCount} error(s), ${warningCount} warning(s)`);
+    else if (warningCount > 0)
+      vscode.window.showWarningMessage(`glTF Validation: ${warningCount} warning(s)`);
+    else
+      vscode.window.showInformationMessage(`✓ Valid glTF: ${fileName}`);
 
   } catch (error: any) {
     console.error('Validation error:', error);
