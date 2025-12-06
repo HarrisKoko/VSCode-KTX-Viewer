@@ -8,16 +8,26 @@ import {
   vkFormatToWebGPU
 } from './transcoder.js';
 
-import CreateKTX2Module from './ktx2_module.js';
+// OPTION A: Use the Emscripten-generated module factory, not a manual loader.
+import Module from "./ktx2_module.js";
 
+// Singleton wrapper around the Emscripten module.
+// This will load ktx2_module.js → ktx2_module.wasm once, then reuse.
 let ktx2ModulePromise = null;
 async function getKtx2Module() {
   if (!ktx2ModulePromise) {
-    ktx2ModulePromise = CreateKTX2Module();
+    ktx2ModulePromise = Module({
+      // Ensure the .wasm is loaded from the VSCode webview URI
+      locateFile: (path) => {
+        if (path.endsWith(".wasm")) {
+          return window.KTX2_WASM_URI || path;
+        }
+        return path;
+      }
+    });
   }
   return ktx2ModulePromise;
 }
-
 
 // Global exports
 window.initLibKTX = initLibKTX;
@@ -296,7 +306,7 @@ function updateTextureInfo(fileSize, width, height, formatName, mips, fileName, 
     const evLabel   = document.getElementById('evv');
     const fileInput = document.getElementById('file');
     const stat      = document.getElementById('stat');
-    const meta      = document.getElementById('meta');
+    const meta      = document.getElementElementById?.('meta') || document.getElementById('meta');
     const filterMode = document.getElementById('filterMode');
 
     const mipControls = document.getElementById('mip-controls');
@@ -552,6 +562,7 @@ function updateTextureInfo(fileSize, width, height, formatName, mips, fileName, 
       if (isBasisLZ) {
         logApp(`Supercompression: ${superName} (BasisLZ) → decoding via WASM ktx2_transcoder`, 'info');
 
+        // Use the Emscripten-generated module, not a manual loader
         const wasm = await getKtx2Module();
         if (!wasm) {
           throw new Error('Failed to initialize WASM KTX2 module');
