@@ -690,6 +690,62 @@ const m = await initLibKTX();
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
       });
 
+      
+// console.log('adapter.features:', Array.from(adapter.features));
+// console.log('wgpuFormat chosen:', wgpuFormat);
+// if (transcodedLevels) console.log('transcodedLevels[0]:', { len: transcodedLevels[0].data.length, w: transcodedLevels[0].width, h: transcodedLevels[0].height });
+
+
+
+// const mipCount = transcodedLevels ? transcodedLevels.length : levels.length;
+
+//     // Create GPU texture
+//     srcTex?.destroy?.();
+//     srcTex = device.createTexture({
+//       size: { width: header.pixelWidth, height: header.pixelHeight, depthOrArrayLayers: 1 },
+//       format: wgpuFormat,
+//       mipLevelCount: mipCount,//levels.length,
+//       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+//     });
+//     srcView = srcTex.createView();
+
+    
+
+
+//     // Upload mip levels
+//     for (let i = 0; i < mipCount; i++) {
+//       const lvl = transcodedLevels ? transcodedLevels[i] : levels[i];//= levels[i];
+      
+// // Extract pixel dimensions
+// const mipWidth  = transcodedLevels ? transcodedLevels[i].width  : lvl.width;
+// const mipHeight = transcodedLevels ? transcodedLevels[i].height : lvl.height;
+
+
+//       // Use transcoded data if available, otherwise original
+//       let raw = transcodedLevels 
+//         ? transcodedLevels[i].data 
+//         : new Uint8Array(buf, lvl.byteOffset, lvl.byteLength);
+
+//       const { data: paddedData, bytesPerRow, blockRows } =
+//   padBlockRowsBC(raw, mipWidth, mipHeight, bytesPerBlock, blockWidth, blockHeight);
+
+//   // Copy size must be block-aligned
+//   const uploadWidth  = Math.ceil(mipWidth  / blockWidth)  * blockWidth;
+//   const uploadHeight = Math.ceil(mipHeight / blockHeight) * blockHeight;
+
+// device.queue.writeTexture(
+//   { texture: srcTex, mipLevel: i },
+//   paddedData,
+//   {
+//     bytesPerRow,
+//     rowsPerImage: blockRows   
+//   },
+//   {
+//     width: uploadWidth,
+//     height: uploadHeight,
+//     depthOrArrayLayers: 1
+//   }
+
       device.queue.copyExternalImageToTexture(
         { source: bmp },
         { texture: srcTex },
