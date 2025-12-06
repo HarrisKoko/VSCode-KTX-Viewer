@@ -1,163 +1,6 @@
 // File for parsing KTX2 files
 // | Identifier | Header | Level Index | DFD | KVD | SGD | Mip Level Array |
 
-
-// App logger (appends to scrollable log with severity colors)
-const logApp = (...args) => {
-  const el = document.getElementById('appLog');
-  // Known log levels
-  const knownLevels = ["info", "success", "error", "warn"];
-
-  let msgParts = [];
-  let level = "info"; // default
-
-  // Case 1: second argument is a level → keep old behavior
-  if (args.length >= 2 && typeof args[1] === "string" && knownLevels.includes(args[1])) {
-    msgParts = [args[0]];
-    level = args[1];
-  }
-  // Case 2: treat all args as message parts
-  else {
-    msgParts = args;
-  }
-
-  // Convert objects → pretty JSON
-  const msg = msgParts
-    .map(a => (typeof a === "object" ? JSON.stringify(a, null, 2) : String(a)))
-    .join(" ");
-
-  if (el) {
-    el.style.display = 'block';
-    const entry = document.createElement('div');
-    entry.style.marginBottom = '4px';
-    entry.style.paddingBottom = '4px';
-    entry.style.borderBottom = '1px solid #222';
-
-    // Color based on log level
-    const colors = {
-      error: '#ff6666',
-      warn: '#ffaa44',
-      success: '#66ff66',
-      info: '#aaa'
-    };
-    entry.style.color = colors[level] || colors.info;
-    
-    const timestamp = new Date().toLocaleTimeString();
-    entry.textContent = `[${timestamp}] ${msg}`;
-
-    el.appendChild(entry);
-    // Auto-scroll to bottom
-    el.scrollTop = el.scrollHeight;
-  }
-  
-  // Also log to console
-  if (level === 'error') console.error(msg);
-  else if (level === 'warn') console.warn(msg);
-  else console.log(msg);
-};
-
-
-// Supercompression scheme constants
-const SUPERCOMPRESSION_NONE = 0;
-const SUPERCOMPRESSION_BASIS_LZ = 1;
-const SUPERCOMPRESSION_ZSTD = 2;
-const SUPERCOMPRESSION_ZLIB = 3;
-
-// Load fzstd library for Zstandard decompression
-let fzstdLoaded = false;
-let fzstdDecompress = null;
-
-async function loadFzstd() {
-  if (fzstdLoaded) return;
-  
-  // Load fzstd from CDN
-  const script = document.createElement('script');
-  script.src = 'https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.js';
-  
-  await new Promise((resolve, reject) => {
-    script.onload = resolve;
-    script.onerror = () => reject(new Error('Failed to load fzstd library'));
-    document.head.appendChild(script);
-  });
-  
-  if (typeof fzstd !== 'undefined') {
-    fzstdDecompress = fzstd.decompress;
-    fzstdLoaded = true;
-  } else {
-    throw new Error('fzstd library not available after loading');
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Basis Universal Transcoder Loader
-// -----------------------------------------------------------------------------
-let basisModulePromise = null;
-let BasisModule = null;
-
-async function loadBasisModule() {
-  if (basisModulePromise) return basisModulePromise;
-
-  basisModulePromise = new Promise(async (resolve, reject) => {
-    try {
-      // 1. Load JS file by script tag
-      logApp("Loading basis_transcoder.js...");
-      await loadScript("media/basisu/basis_transcoder.js");
-
-      const basisFactory =
-        window.BasisModule ||
-        window.Module ||
-        window.createBasisModule;
-
-      // Ensure global BasisModule function exists
-      if (typeof basisFactory !== "function") {
-        logApp("basis_transcoder.js did not define BasisModule", "error");
-        return reject(new Error("basis_transcoder.js did not define BasisModule"));
-      }
-
-      // 2. Load WASM binary
-      logApp("Loading basis_transcoder.wasm...");
-      const wasmBinary = await fetch("media/basisu/basis_transcoder.wasm")
-        .then(r => r.arrayBuffer());
-
-      logApp("Initializing BasisModule...");
-      basisFactory({ wasmBinary }).then(mod => {
-        BasisModule = mod;
-        resolve(mod);
-      }).catch(reject);
-    } catch (err) {
-      reject(err);
-    }
-  });
-
-  return basisModulePromise;
-}
-
-function loadScript(url) {
-  return new Promise((resolve, reject) => {
-    const el = document.createElement("script");
-    el.src = url;
-    el.onload = resolve;
-    el.onerror = reject;
-    document.head.appendChild(el);
-  });
-}
-
-// -----------------------------------------------------------------------------
-// Helper for Basis files
-// -----------------------------------------------------------------------------
-function makeBasisFile(u8) {
-  return new BasisModule.BasisFile(u8);
-}
-
-// Choose GPU target (fixed)
-function getBasisTargetFormatForGPU(device) {
-  if (device.features.has("texture-compression-bc")) {
-    return BasisModule.TranscodeTarget.BC7; // best choice for UASTC
-  }
-  return BasisModule.TranscodeTarget.RGBA32;
-}
-
-
 async function parseKTX2(arrayBuffer) {
   const dv = new DataView(arrayBuffer);
 
@@ -222,75 +65,6 @@ async function parseKTX2(arrayBuffer) {
     kvd = parseKVD(dv, index.kvdByteOffset, index.kvdByteLength);
   }
 
-  // Handle supercompression - decompress level data if needed
-  if (header.supercompressionScheme === SUPERCOMPRESSION_ZSTD) {
-    await loadFzstd();
-    
-    // Decompress each mip level
-    for (let i = 0; i < levels.length; i++) {
-      const level = levels[i];
-      const compressedData = new Uint8Array(arrayBuffer, level.byteOffset, level.byteLength);
-      
-      try {
-        const decompressedData = fzstdDecompress(compressedData);
-        
-        // Store decompressed data - we need to keep it accessible
-        level.decompressedData = decompressedData;
-        level.isDecompressed = true;
-        
-        // Verify size matches expected
-        if (decompressedData.length !== level.uncompressedByteLength) {
-          console.warn(`Level ${i}: Decompressed size ${decompressedData.length} != expected ${level.uncompressedByteLength}`);
-        }
-      } catch (e) {
-        throw new Error(`Failed to decompress level ${i}: ${e.message}`);
-      }
-    }
-  } else if (header.supercompressionScheme === SUPERCOMPRESSION_BASIS_LZ) { // This means ETC1S or UASTC
-    logApp("Detected BASIS-LZ texture (ETC1S or UASTC)");
-
-    
-
-
-    // Load transcoder
-    // await loadBasisModule();
-
-    const BASIS = await loadBasisModule(); // loads wasm
-    logApp("FINISHED LOADING BASIS", "success");
-    const file = new BASIS.KTX2File(new Uint8Array(data));
-    console.log("supports KTX2?", file.isValid());
-    logApp("Basis file valid: " + file.isValid());
-    
-
-    const basisFile = makeBasisFile(
-      new Uint8Array(arrayBuffer, levels[0].byteOffset, levels[0].byteLength)
-    );
-
-    if (!basisFile.isValid()) {
-      throw new Error("Invalid Basis file inside KTX2");
-    }
-
-    const imageCount = basisFile.getNumImages();
-    if (imageCount === 0) throw new Error("Basis file has no images");
-
-    const format = getBasisTargetFormatForGPU(device);
-
-    const bytes = basisFile.transcodeImage(
-      format,
-      0, // image index
-      0  // level index
-    );
-
-    levels[0].isDecompressed = true;
-    levels[0].decompressedData = bytes;
-
-    basisFile.close();
-  } else if (header.supercompressionScheme === SUPERCOMPRESSION_ZLIB) {
-    throw new Error('Zlib supercompression not yet supported. Use Zstd or uncompressed KTX2.');
-  } else if (header.supercompressionScheme !== SUPERCOMPRESSION_NONE) {
-    throw new Error(`Unknown supercompression scheme: ${header.supercompressionScheme}`);
-  }
-
   return { header, index, levels, dfd, kvd };
 }
 
@@ -351,6 +125,7 @@ function getLevelData(arrayBuffer, level) {
 // Vulkan format enum to WebGPU format string + metadata
 // Returns: { format: 'bc7-rgba-unorm', blockWidth: 4, blockHeight: 4, bytesPerBlock: 16 }
 function vkFormatToWebGPU(vkFormat) {
+  console.log('vkFormatToWebGPU called with:', vkFormat);
   const formats = {
     // BC1 (DXT1) - 4x4 blocks, 8 bytes per block
     131: { format: 'bc1-rgba-unorm', blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 },
@@ -382,43 +157,86 @@ function vkFormatToWebGPU(vkFormat) {
 
     // --- MOBILE FORMATS ---
 
-    // ETC2 formats
+    // ETC1 formats - 4x4 blocks, 8 bytes per block (RGB only, no alpha)
+    // Note: WebGPU doesn't have native ETC1, but we can use ETC2 which is backward compatible
+    148: { format: "etc2-rgb8unorm", blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 }, // ETC1 RGB
+    149: { format: "etc2-rgb8unorm-srgb", blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 }, // ETC1 RGB sRGB
+
+    // ETC2 formats - 4x4 blocks
+    // Note: bytesPerBlock here is initial value, will be overridden by DFD if present
     152: { format: "etc2-rgb8unorm",  blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 },
     153: { format: "etc2-rgb8a1unorm", blockWidth: 4, blockHeight: 4, bytesPerBlock: 8 },
     154: { format: "etc2-rgba8unorm", blockWidth: 4, blockHeight: 4, bytesPerBlock: 16 },
 
     // --- UNCOMPRESSED FORMATS ---
 
-    // RGB8 (UNORM & SRGB) — 3 bytes per pixel
-    // these formats can't be used directly in WebGPU, need to be expanded to RGBA8
-    23: { format: 'rgba8unorm', bytesPerPixel: 4, sourceChannels: 3 },
-    24: { format: 'rgba8unorm-srgb', bytesPerPixel: 4, sourceChannels: 3 },
-    29: { format: 'rgba8unorm', bytesPerPixel: 4, sourceChannels: 3 },
+    // RGB8 (UNORM & SRGB) — source data is 3-channel, must be expanded to RGBA8
+    23: { format: 'rgba8unorm',       bytesPerPixel: 4, sourceChannels: 3 },
+    24: { format: 'rgba8unorm-srgb',  bytesPerPixel: 4, sourceChannels: 3 },
+    29: { format: 'rgba8unorm',       bytesPerPixel: 4, sourceChannels: 3 },
 
     // RGBA8
-    37:  { format: 'rgba8unorm',       bytesPerPixel: 4 },
-    43:  { format: 'rgba8unorm-srgb',  bytesPerPixel: 4 },
+    37: { format: 'rgba8unorm',      bytesPerPixel: 4 },
+    43: { format: 'rgba8unorm-srgb', bytesPerPixel: 4 },
 
     // RGBA16F — 8 bytes per pixel
-    97:  { format: 'rgba16float',      bytesPerPixel: 8 },
+    97: { format: 'rgba16float', bytesPerPixel: 8 },
 
-    // RGBA32F — 16 bytes per pixel
-    // going to doconvert to RGBA16F for WebGPU usage for now
+    // RGBA32F — convert float32 → float16 first
     109: { format: 'rgba16float', bytesPerPixel: 8, sourceBytesPerPixel: 16 },
 
-
     // R11G11B10 UFLOAT
-    100: { format: 'rg11b10ufloat',    bytesPerPixel: 4 },
+    100: { format: 'rg11b10ufloat', bytesPerPixel: 4 },
     122: { format: "rg11b10ufloat", bytesPerPixel: 4 },
 
-
-    // RGB9E5
-    99:  { format: 'rgb9e5ufloat',     bytesPerPixel: 4 },
+    // RGB9E5 UFLOAT
+    99:  { format: 'rgb9e5ufloat', bytesPerPixel: 4 },
     123: { format: 'rgb9e5ufloat', bytesPerPixel: 4 },
 
   };
   
-  return formats[vkFormat] || null;
+  const result = formats[vkFormat] || null;
+  console.log('vkFormatToWebGPU returning:', result);
+  return result;
+}
+
+// Apply DFD corrections to format info
+// The DFD (Data Format Descriptor) is authoritative over vkFormat header field
+function applyDFDCorrections(formatInfo, dfd, vkFormat) {
+  if (!formatInfo || !dfd) return formatInfo;
+  
+  // For block-compressed formats, trust DFD bytesPlane[0] over vkFormat
+  if (formatInfo.blockWidth && dfd.bytesPlane && dfd.bytesPlane[0]) {
+    const dfdBytesPerBlock = dfd.bytesPlane[0];
+    
+    if (dfdBytesPerBlock !== formatInfo.bytesPerBlock) {
+      console.warn(`vkFormat ${vkFormat} claims ${formatInfo.bytesPerBlock} bytes/block, but DFD says ${dfdBytesPerBlock}. Using DFD value.`);
+      
+      // Update bytes per block - THIS IS THE KEY FIX
+      formatInfo.bytesPerBlock = dfdBytesPerBlock;
+      
+      // For ETC2 formats, fix the WebGPU format string based on actual size
+      // Also handles ETC1 (148-149) which WebGPU maps to ETC2
+      if (vkFormat >= 148 && vkFormat <= 154) {
+        if (dfdBytesPerBlock === 8) {
+          // ETC1/ETC2 RGB or RGB with 1-bit alpha
+          if (dfd.colorModel === 160) {
+            formatInfo.format = 'etc2-rgb8unorm';
+          } else if (dfd.colorModel === 162) {
+            formatInfo.format = 'etc2-rgb8a1unorm';
+          } else {
+            // Default to RGB if colorModel is unclear
+            formatInfo.format = 'etc2-rgb8unorm';
+          }
+        } else if (dfdBytesPerBlock === 16) {
+          // ETC2 RGBA with full alpha
+          formatInfo.format = 'etc2-rgba8unorm';
+        }
+      }
+    }
+  }
+  
+  return formatInfo;
 }
 
 // Get human-readable format name
@@ -431,16 +249,8 @@ function getFormatName(vkFormat) {
     141: 'BC5 (RGTC2) UNORM', 142: 'BC5 (RGTC2) SNORM',
     143: 'BC6H UFLOAT', 144: 'BC6H FLOAT',
     145: 'BC7 UNORM', 146: 'BC7 SRGB',
-    23:  'RGB8 UNORM',
-    24:  'RGB8 SRGB',
-    29:  'RGB8 SRGB',
-    37:  'RGBA8 UNORM',
-    43:  'RGBA8 SRGB',
-    97:  'RGBA16 FLOAT',
-    99:  'RGB9E5 UFLOAT', 
-    100: 'R11G11B10 UFLOAT',
-    109: 'RGBA32 FLOAT',
-    
+    148: 'ETC1 RGB', 149: 'ETC1 RGB SRGB',
+    152: 'ETC2 RGB8', 153: 'ETC2 RGB8A1', 154: 'ETC2 RGBA8',
   };
   return names[vkFormat] || `VK Format ${vkFormat}`;
 }
@@ -458,6 +268,7 @@ function getSupercompressionName(scheme) {
 // Expose functions
 window.parseKTX2 = parseKTX2;
 window.vkFormatToWebGPU = vkFormatToWebGPU;
+window.applyDFDCorrections = applyDFDCorrections;
 window.getFormatName = getFormatName;
 window.getSupercompressionName = getSupercompressionName;
 window.parseDFD = parseDFD;
