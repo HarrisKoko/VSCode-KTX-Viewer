@@ -734,266 +734,179 @@ const m = await initLibKTX();
     }
 
     async function loadKTX2_ToTexture(file) {
-      if (!bcSupported) {
-        logApp('BC compressed textures not supported on this device.', 'error');
-        throw new Error('BC compressed textures not supported on this device.');
-      }
-      
-      logApp(`Loading KTX2 ${file.name}...`, 'info');
-      await waitForKTXParser();
+  logApp(`Loading KTX2 ${file.name}...`, 'info');
+  await waitForKTXParser();
 
-      const buf = await file.arrayBuffer();
-      const { header, levels, dfd, kvd } = await window.parseKTX2(buf, device);
+  const buf = await file.arrayBuffer();
+  
+  // Parse and transcode (if needed) - this happens in read.js
+  const { header, levels, dfd, kvd } = await window.parseKTX2(buf, device);
 
-      const is2D = header.pixelDepth === 0 && header.faceCount === 1;
-      if (!is2D) {
-        logApp('Only 2D, 1-face KTX2 supported in this demo.', 'error');
-        throw new Error('Only 2D, 1-face KTX2 supported in this demo.');
-      }
+  const is2D = header.pixelDepth === 0 && header.faceCount === 1;
+  if (!is2D) {
+    logApp('Only 2D, 1-face KTX2 supported in this demo.', 'error');
+    throw new Error('Only 2D, 1-face KTX2 supported in this demo.');
+  }
 
-      const isBasisFormat = header.supercompressionScheme === 1;
-      if (header.supercompressionScheme !== 0 && !isBasisFormat) {
-        throw new Error('Supercompressed KTX2 (ZSTD/ZLIB) not supported. Only Basis Universal supported.');
-      }
+  // Initialize format variables
+  let wgpuFormat, blockWidth, blockHeight, bytesPerBlock;
+  let mipCount = levels.length || 1;
+  
+  // Check if transcoding happened in read.js
+  const isTranscoded = levels[0]?.isDecompressed;
 
-      // CHECK: What format is this?
-      const formatInfo = window.checkFormatRequirements(header.vkFormat);// window.vkFormatToWebGPU(header.vkFormat);
-      const isETC2 =
-        header.vkFormat === 152 ||    // VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK
-        header.vkFormat === 153 ||    // VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK
-        header.vkFormat === 147 ||    // ETC2 formats RGB
-        header.vkFormat === 148 ||
-        header.vkFormat === 149;
-
-      // if (!formatInfo && !isETC2 && !(isBasisFormat && header.vkFormat === 0)) {
-      //   logApp(`Unsupported vkFormat ${header.vkFormat}. Supported: BC1-BC7, ETC2, BasisUniversal.`, 'error');
-      //   throw new Error(`Unsupported vkFormat ${header.vkFormat}.`);
-      // }
-      let wgpuFormat, blockWidth, blockHeight, bytesPerBlock;
-      // let { wgpuFormat, blockWidth, blockHeight, bytesPerBlock } = formatInfo;
-      const formatName = window.getFormatName ? window.getFormatName(header.vkFormat) : `vkFormat ${header.vkFormat}`;
-      // let wgpuFormat, blockWidth, blockHeight, bytesPerBlock;
-      let transcodedLevels = null;
-
-      const nativeSupported = adapter.features.has("texture-compression-etc2");
-      // logApp("native ETC2 support:", nativeSupported);
-      const needsTranscode =
-        (isBasisFormat && header.vkFormat === 0) ||     // ETC1S, UASTC
-        (isETC2 && !nativeSupported);                   // ETC2 unsupported → transcode
-
-      if (isETC2 && nativeSupported) {
-        wgpuFormat = "etc2-rgba8unorm";   // or srgb variant
-        blockWidth = 4;
-        blockHeight = 4;
-        bytesPerBlock = 16;               // ETC2 is 64 bits per block = 8 bytes (RGB) or 16 bytes (RGBA)
-        
-        // ETC2_RGBA8 = 16 bytes per block
-        if (header.vkFormat === 152 || header.vkFormat === 153) {
-          bytesPerBlock = 16; // ETC2 RGBA8
-        } else {
-          bytesPerBlock = 8;  // ETC2 RGB formats
-        }
-
-        // mips: no transcoding, use raw level data
-        transcodedLevels = null;
-
-        logApp("ETC2 native path:", { wgpuFormat, bytesPerBlock });
-      }
-
-      // Special case: Basis Universal formats use VK_FORMAT_UNDEFINED (0)
-      else if (needsTranscode) {
-        let basisFormatName = 'Basis Universal';
-
-        if (levels[0] && levels[0].isDecompressed) {
-          stat.textContent = `Using pre-transcoded Basis data...`;
-          
-          const tf = levels[0].transcodedFormat; 
-          const dataSize = levels[0].decompressedData.byteLength;
-          const w = header.pixelWidth;
-          const h = header.pixelHeight;
-          
-          console.log(`[main.js] Handover from read.js:`);
-          console.log(`   > Transcoded Format ID: ${tf}`);
-          console.log(`   > Actual Data Buffer Size: ${dataSize} bytes`);
-          console.log(`   > Image Dimensions: ${w}x${h}`);
-
-          // Map format ID to WebGPU format
-          if (tf === 0) { 
-            // BC1 RGB (8 bytes per 4x4 block)
-            wgpuFormat = 'bc1-rgba-unorm'; 
-            blockWidth = 4; blockHeight = 4; bytesPerBlock = 8;
-          } 
-          else if (tf === 1) {
-            // BC3 RGBA (16 bytes per 4x4 block)
-            wgpuFormat = 'bc3-rgba-unorm';
-            blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
-          } 
-          else if (tf === 6) {
-            // BC7 RGBA (16 bytes per 4x4 block)
-            wgpuFormat = 'bc7-rgba-unorm';
-            blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
-          } 
-          else if (tf === 13) {
-            // Uncompressed RGBA32
-            wgpuFormat = 'rgba8unorm';
-            blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
-          } 
-          else {
-            console.warn(`[main.js] Unknown Transcoded Format ID: ${tf}`);
-            wgpuFormat = 'rgba8unorm';
-            blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
-          }
-
-          // Validate size
-          const wBlocks = Math.ceil(w / blockWidth);
-          const hBlocks = Math.ceil(h / blockHeight);
-          const expectedBytes = wBlocks * hBlocks * bytesPerBlock;
-
-          console.log(`[main.js] WebGPU Configuration:`);
-          console.log(`   > Selected Format: ${wgpuFormat}`);
-          console.log(`   > Block Config: ${blockWidth}x${blockHeight}, ${bytesPerBlock} bytes/block`);
-          console.log(`   > Expected Payload: ${expectedBytes} bytes`);
-
-          if (dataSize !== expectedBytes) {
-            console.error(`[main.js] CRITICAL MISMATCH: WebGPU expects ${expectedBytes} bytes but buffer has ${dataSize} bytes!`);
-          } else {
-            console.log(`[main.js] ✓ Size check passed.`);
-          }
-
-          transcodedLevels = null;
-          logApp(`Texture transcoded to ${wgpuFormat} (format ID ${tf})`, 'success');
-   
-        } else {
-          // If read.js didn't handle it, we would need libktx or another transcoder.
-          // Since you want to avoid libktx, we throw an error here if read.js failed.
-          throw new Error("Transcoding failed in read.js and LibKTX is disabled.");
-        }
-      
-
-        if (dfd && dfd.length > 0) {
-          if (dfd[0].colorModel === 163) basisFormatName = 'ETC1S';
-          else if (dfd[0].colorModel === 166 || dfd[0].colorModel === 152) basisFormatName = 'UASTC';
-        }
-
-        stat.textContent = `Loading ${file.name}... initializing transcoder for ${basisFormatName}`;
-        meta.textContent = 'Initializing Basis Universal...';
-
+  if (isTranscoded) {
+    // Transcoded path - data was processed by read.js
+    const tf = levels[0].transcodedFormat;
+    
+    logApp(`Using pre-transcoded Basis data (format ID: ${tf})`, 'info');
+    
+    // Map Basis format ID to WebGPU format
+    if (tf === 0) {
+      wgpuFormat = 'bc1-rgba-unorm';
+      blockWidth = 4; blockHeight = 4; bytesPerBlock = 8;
+    } else if (tf === 1) {
+      wgpuFormat = 'bc3-rgba-unorm';
+      blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
+    } else if (tf === 6) {
+      wgpuFormat = 'bc7-rgba-unorm';
+      blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
+    } else if (tf === 13) {
+      wgpuFormat = 'rgba8unorm';
+      blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
+    } else {
+      logApp(`Unknown transcoded format ID: ${tf}, falling back to RGBA8`, 'warn');
+      wgpuFormat = 'rgba8unorm';
+      blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
     }
-
-      // PATH 1: NATIVE BC FORMAT - use existing code as-is
-      else if (formatInfo && !formatInfo.needsProcessing) {
-        const info = window.vkFormatToWebGPU(header.vkFormat);
-        wgpuFormat = info.format;
-        blockWidth = info.blockWidth;
-        blockHeight = info.blockHeight;
-        bytesPerBlock = info.bytesPerBlock;
-        
-        stat.textContent = `Loading ${file.name}...`;
-      } 
-      else {
-        throw new Error(`Unsupported format: ${window.getFormatName(header.vkFormat)}`);
-      }
-
-      let mipCount = transcodedLevels ? transcodedLevels.length : levels.length;
-
-      if (needsTranscode && levels[0].isDecompressed) {
-         // Count how many levels actually got transcoded
-         let validMips = 0;
-         for (let i = 0; i < levels.length; i++) {
-             if (levels[i].isDecompressed) validMips++;
-             else break;
-         }
-         mipCount = validMips; // Reduce mipCount to avoid uploading garbage
-      }
-
-      // Create GPU texture
-      // srcTex?.destroy?.();
-        srcTex = device.createTexture({
-          size: { width: header.pixelWidth, height: header.pixelHeight, depthOrArrayLayers: 1 },
-          format: wgpuFormat,
-          mipLevelCount: mipCount, // Use the adjusted count
-          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
-        });
-
-      
-
-      // Upload mip levels
-      for (let i = 0; i < mipCount; i++) {
-        const lvl = levels[i];
-        
-        // Get the data
-        let raw;
-        if (lvl.isDecompressed && lvl.decompressedData) {
-          raw = lvl.decompressedData;
-          console.log(`[main.js] Uploading level ${i}: ${raw.byteLength} bytes (transcoded)`);
-        } else {
-          raw = window.getLevelData(buf, lvl);
-          console.log(`[main.js] Uploading level ${i}: ${raw.byteLength} bytes (raw)`);
-        }
-        
-        const wBlocks = Math.max(1, Math.ceil(lvl.width / blockWidth));
-        const hBlocks = Math.max(1, Math.ceil(lvl.height / blockHeight));
-        const bytesPerRow = wBlocks * bytesPerBlock;
-        
-        // CRITICAL: For compressed textures, dimensions must be multiples of block size
-        const uploadWidth = wBlocks * blockWidth;   // Round up to block boundary
-        const uploadHeight = hBlocks * blockHeight;  // Round up to block boundary
-        
-        console.log(`[main.js] Level ${i}: uploading ${raw.byteLength} bytes (${lvl.width}x${lvl.height} → ${uploadWidth}x${uploadHeight}, ${bytesPerRow} bytes/row)`);
-        
-        device.queue.writeTexture(
-          { texture: srcTex, mipLevel: i },
-          raw,
-          { 
-            bytesPerRow: bytesPerRow,
-            rowsPerImage: hBlocks
-          },
-          { 
-            width: uploadWidth,    // Must be multiple of 4
-            height: uploadHeight,  // Must be multiple of 4
-            depthOrArrayLayers: 1 
-          }
-        );
-      }
-      
-      mipCount = levels.length || 1;
-      currentMip = 0;
-      mipSlider.min = 0;
-      mipSlider.max = Math.max(0, mipCount - 1);
-      mipSlider.value = 0;
-      mipLabel.textContent = '0';
-      mipControls.style.display = mipCount > 1 ? 'block' : 'none';
-
-      srcView = srcTex.createView();
-      if (texPipeline) texBindGroup = makeTexBindGroup();
-
-      // Build metadata object for texture info panel
-      const compressionName = window.getSupercompressionName ? 
-        window.getSupercompressionName(header.supercompressionScheme) : 
-        (header.supercompressionScheme === 0 ? 'None' : `Scheme ${header.supercompressionScheme}`);
-      
-      const metadata = {
-        supercompression: compressionName
-      };
-      
-      if (kvd && Object.keys(kvd).length > 0) {
-        let kvdStr = Object.keys(kvd).join(', ');
-        if (kvd.KTXorientation) kvdStr += ` (orientation: ${kvd.KTXorientation})`;
-        metadata.kvd = kvdStr;
-      }
-      
-      if (dfd) {
-        metadata.dfd = `colorModel=${dfd.colorModel}, transfer=${dfd.transferFunction}`;
-      }
-      
-      stat.textContent = `Loaded ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${mipCount} mip${mipCount>1?'s':''})`;
-      meta.textContent = '';  // Clear old meta display
-      
-      // Update texture info panel with metadata
-      updateTextureInfo(file.size, header.pixelWidth, header.pixelHeight, formatName, mipCount, file.name, metadata);
-      
-      logApp(`Successfully loaded KTX2 ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${formatName}, ${mipCount} mips)`, 'success');
+    
+    // Count valid transcoded mips
+    let validMips = 0;
+    for (let i = 0; i < levels.length; i++) {
+      if (levels[i].isDecompressed) validMips++;
+      else break;
     }
+    mipCount = validMips;
+    
+    logApp(`Texture transcoded to ${wgpuFormat} (${validMips} mips)`, 'success');
+    
+  } else {
+    // Native format path - no transcoding needed
+    
+    // Check for ETC2 native support
+    const isETC2 = header.vkFormat === 147 || header.vkFormat === 148 || 
+                   header.vkFormat === 149 || header.vkFormat === 152 || 
+                   header.vkFormat === 153;
+    
+    if (isETC2 && adapter.features.has("texture-compression-etc2")) {
+      wgpuFormat = "etc2-rgba8unorm";
+      blockWidth = 4;
+      blockHeight = 4;
+      bytesPerBlock = (header.vkFormat === 152 || header.vkFormat === 153) ? 16 : 8;
+      logApp("Using native ETC2 format", 'info');
+      
+    } else {
+      // Try native BC formats
+      const formatInfo = window.vkFormatToWebGPU(header.vkFormat);
+      
+      if (!formatInfo) {
+        const formatName = window.getFormatName ? window.getFormatName(header.vkFormat) : `vkFormat ${header.vkFormat}`;
+        logApp(`Unsupported vkFormat ${header.vkFormat}. File may need Basis transcoding.`, 'error');
+        throw new Error(`Unsupported format: ${formatName}`);
+      }
+      
+      wgpuFormat = formatInfo.format;
+      blockWidth = formatInfo.blockWidth;
+      blockHeight = formatInfo.blockHeight;
+      bytesPerBlock = formatInfo.bytesPerBlock;
+      logApp(`Using native format: ${wgpuFormat}`, 'info');
+    }
+  }
+
+  // Create GPU texture
+  srcTex?.destroy?.();
+  srcTex = device.createTexture({
+    size: { width: header.pixelWidth, height: header.pixelHeight, depthOrArrayLayers: 1 },
+    format: wgpuFormat,
+    mipLevelCount: mipCount,
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+  });
+
+  // Upload mip levels
+  for (let i = 0; i < mipCount; i++) {
+    const lvl = levels[i];
+    
+    // Get the data - use transcoded if available, otherwise raw
+    let raw;
+    if (lvl.isDecompressed && lvl.decompressedData) {
+      raw = lvl.decompressedData;
+    } else {
+      raw = window.getLevelData(buf, lvl);
+    }
+    
+    // Calculate block dimensions
+    const wBlocks = Math.max(1, Math.ceil(lvl.width / blockWidth));
+    const hBlocks = Math.max(1, Math.ceil(lvl.height / blockHeight));
+    const bytesPerRow = wBlocks * bytesPerBlock;
+    
+    // For compressed textures, upload dimensions must be multiples of block size
+    const uploadWidth = wBlocks * blockWidth;
+    const uploadHeight = hBlocks * blockHeight;
+    
+    // Upload to GPU
+    device.queue.writeTexture(
+      { texture: srcTex, mipLevel: i },
+      raw,
+      { 
+        bytesPerRow: bytesPerRow,
+        rowsPerImage: hBlocks
+      },
+      { 
+        width: uploadWidth,
+        height: uploadHeight,
+        depthOrArrayLayers: 1 
+      }
+    );
+  }
+
+  // Update UI state
+  currentMip = 0;
+  mipSlider.min = 0;
+  mipSlider.max = Math.max(0, mipCount - 1);
+  mipSlider.value = 0;
+  mipLabel.textContent = '0';
+  mipControls.style.display = mipCount > 1 ? 'block' : 'none';
+
+  srcView = srcTex.createView();
+  if (texPipeline) texBindGroup = makeTexBindGroup();
+
+  // Build metadata for display
+  const compressionName = window.getSupercompressionName ? 
+    window.getSupercompressionName(header.supercompressionScheme) : 
+    (header.supercompressionScheme === 0 ? 'None' : `Scheme ${header.supercompressionScheme}`);
+  
+  const metadata = {
+    supercompression: compressionName
+  };
+  
+  if (kvd && Object.keys(kvd).length > 0) {
+    let kvdStr = Object.keys(kvd).join(', ');
+    if (kvd.KTXorientation) kvdStr += ` (orientation: ${kvd.KTXorientation})`;
+    metadata.kvd = kvdStr;
+  }
+  
+  if (dfd) {
+    metadata.dfd = `colorModel=${dfd.colorModel}, transfer=${dfd.transferFunction}`;
+  }
+  
+  // Update status displays
+  stat.textContent = `Loaded ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${mipCount} mip${mipCount>1?'s':''})`;
+  meta.textContent = '';
+  
+  updateTextureInfo(file.size, header.pixelWidth, header.pixelHeight, wgpuFormat, mipCount, file.name, metadata);
+  
+  logApp(`Successfully loaded KTX2 ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${wgpuFormat}, ${mipCount} mips)`, 'success');
+}
 
     fileInp.addEventListener('change', async () => {
       const f = fileInp.files?.[0];

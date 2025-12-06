@@ -244,6 +244,13 @@ async function parseKTX2(arrayBuffer, device) {
     supercompressionScheme: dv.getUint32(offset, true), offset: (offset += 4), // Supercompression scheme used (0 = none)
   };
 
+  console.log('[read.js] Header parsed:', {
+  vkFormat: header.vkFormat,
+  supercompressionScheme: header.supercompressionScheme,
+  width: header.pixelWidth,
+  height: header.pixelHeight
+});
+
   // Indexing of data blocks
   const index = {
     dfdByteOffset: dv.getUint32(offset, true), offset: (offset += 4), // Data Format Descriptor
@@ -303,9 +310,81 @@ async function parseKTX2(arrayBuffer, device) {
       } catch (e) {
         throw new Error(`Failed to decompress level ${i}: ${e.message}`);
       }
+  }
+
+} else if (header.vkFormat === 0 && header.supercompressionScheme === SUPERCOMPRESSION_NONE) {
+    // Raw UASTC or ETC1S without supercompression
+    logApp("Detected raw Basis Universal texture (no supercompression)");
+    
+    // Load transcoder
+    await loadBasisModule();
+    
+    let basisFile = null;
+    const fileUint8 = new Uint8Array(arrayBuffer);
+    
+    if (BasisModule.KTX2File) {
+      basisFile = new BasisModule.KTX2File(fileUint8);
     }
-  } else if (header.supercompressionScheme === SUPERCOMPRESSION_BASIS_LZ) { // This means ETC1S or UASTC
+    
+    if (!basisFile) {
+      basisFile = new BasisModule.BasisFile(fileUint8);
+    }
+    
+    if (!basisFile.startTranscoding()) {
+      basisFile.close();
+      basisFile.delete();
+      throw new Error("Transcoder failed to initialize");
+    }
+    
+    const isKTX2File = (BasisModule.KTX2File && basisFile instanceof BasisModule.KTX2File);
+    const format = 13; // RGBA32
+    const imageIndex = 0;
+    
+    let transcoderLevelCount = isKTX2File ? basisFile.getLevels() : basisFile.getNumLevels(imageIndex);
+    const safeLevelCount = Math.min(levels.length, transcoderLevelCount);
+    
+    for (let i = 0; i < safeLevelCount; i++) {
+      let dst = null;
+      let status = false;
+      
+      if (isKTX2File) {
+        const size = basisFile.getImageTranscodedSizeInBytes(i, 0, 0, format);
+        if (size === 0) break;
+        
+        dst = new Uint8Array(size);
+        status = basisFile.transcodeImage(dst, i, 0, 0, format, 0, 0);
+      } else {
+        const size = basisFile.getImageTranscodedSizeInBytes(imageIndex, i, format);
+        if (size === 0) break;
+        
+        dst = new Uint8Array(size);
+        status = basisFile.transcodeImage(dst, imageIndex, i, format, 0, 0);
+      }
+      
+      if (status && dst && dst.length > 0) {
+        levels[i].isDecompressed = true;
+        levels[i].decompressedData = dst;
+        levels[i].transcodedFormat = format;
+        console.log(`Level ${i}: Raw Basis → RGBA32 ✓ (${dst.length} bytes)`);
+      } else {
+        break;
+      }
+    }
+    
+    basisFile.close();
+    basisFile.delete();
+    
+} else if (header.supercompressionScheme === SUPERCOMPRESSION_BASIS_LZ) { // This means ETC1S or UASTC
+    console.log('[read.js] Entering BASIS_LZ block');  
     logApp("Detected BASIS-LZ texture (ETC1S or UASTC)");
+
+    // Detect UASTC via DFD color model (166 = UASTC)
+    // BasisLZ covers ETC1S (model 160) and UASTC (model 166)
+    const isUASTC = (dfd && dfd.colorModel === 166);
+
+    // Choose a GPU-friendly target format
+    // UASTC → BC7 is the most correct path
+    const targetFormat = 13; // 6 = BC7 in Basis Transcoder IDs
 
     // 1. Load the transcoder
     await loadBasisModule();
@@ -377,116 +456,73 @@ async function parseKTX2(arrayBuffer, device) {
     const levelIndex = i;
     let dst = null;
     let status = false;
+    let actualFormat = format; // Track which format was actually used
 
     try {
         if (isKTX2File) {
+            // UASTC path
             const layerIndex = 0;
             const faceIndex = 0;
-            
-            // Get size for this specific level
+            const RGBA32 = 13;
+            actualFormat = RGBA32;
+
             const size = basisFile.getImageTranscodedSizeInBytes(
-                levelIndex,  // Level comes FIRST for KTX2File
-                layerIndex, 
-                faceIndex,
-                format
+                levelIndex, layerIndex, faceIndex, RGBA32
             );
 
-            console.log(`   > Level ${levelIndex} transcode size: ${size} bytes`);
-
             if (size === 0) {
-                console.warn(`   > Size is 0, skipping level ${levelIndex}`);
+                console.warn(`Level ${levelIndex}: no size, stopping`);
                 break;
             }
 
             dst = new Uint8Array(size);
-            
-            // Transcode - note parameter order!
             status = basisFile.transcodeImage(
-                dst,
-                levelIndex,   // Level first
-                layerIndex,
-                faceIndex,
-                format,
-                0,  // pvrtc_wrap_addressing
-                0  // get_alpha_for_opaque_formats
+                dst, levelIndex, layerIndex, faceIndex, RGBA32, 0, 0
             );
 
-            // After successful transcode
-            if (i === 0 && format === 0) {
-                // Verify BC1 format: each 8-byte block encodes a 4x4 pixel region
-                // BC1 structure: 2 bytes color0 + 2 bytes color1 + 4 bytes indices
-                const block0 = dst.slice(0, 8);
-                console.log(`   > BC1 block 0 structure check:`, {
-                    color0: (block0[1] << 8) | block0[0],
-                    color1: (block0[3] << 8) | block0[2],
-                    indices: Array.from(block0.slice(4, 8))
-                });
-            }
+            console.log(`Level ${i}: UASTC → RGBA32 ${status ? '✓' : '✗'} (${dst.length} bytes)`);
 
-            if (status && dst && dst.length > 0) {
-              levels[i].isDecompressed = true;
-              levels[i].decompressedData = dst;
-              levels[i].transcodedFormat = format;
-              
-              // DEBUG: Check first few bytes of transcoded data
-              if (i === 0) {
-                  const preview = Array.from(dst.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-                  console.log(`   > First 32 bytes: ${preview}`);
-              }
-              
-              console.log(`   > ✓ Level ${i} transcoded successfully (${dst.length} bytes)`);
-            }
         } else {
-            // BasisFile Path
+            // ETC1S path
             const size = basisFile.getImageTranscodedSizeInBytes(
                 imageIndex, levelIndex, format
             );
             
-            console.log(`   > Level ${levelIndex} transcode size: ${size} bytes`);
-            
             if (size === 0) {
-                console.warn(`   > Size is 0, skipping level ${levelIndex}`);
+                console.warn(`Level ${levelIndex}: no size, stopping`);
                 break;
             }
             
             dst = new Uint8Array(size);
-            
             status = basisFile.transcodeImage(
                 dst, imageIndex, levelIndex, format, 0, 0
             );
 
-            if (status && dst && dst.length > 0) {
-              levels[i].isDecompressed = true;
-              levels[i].decompressedData = dst;
-              levels[i].transcodedFormat = format;
-              
-              // DEBUG: Check first few bytes of transcoded data
-              if (i === 0) {
-                  const preview = Array.from(dst.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-                  console.log(`   > First 32 bytes: ${preview}`);
-              }
-              
-              console.log(`   > ✓ Level ${i} transcoded successfully (${dst.length} bytes)`);
-            }
+            console.log(`Level ${i}: ETC1S → format ${format} ${status ? '✓' : '✗'} (${dst.length} bytes)`);
         }
     } catch (err) {
-        console.warn(`Transcode warning on level ${i}:`, err);
-        status = false;
+        console.error(`Level ${i} transcode error:`, err);
+        break;
     }
 
+    // Store result (only if successful)
     if (status && dst && dst.length > 0) {
         levels[i].isDecompressed = true;
         levels[i].decompressedData = dst;
-        levels[i].transcodedFormat = format;
-        console.log(`   > ✓ Level ${i} transcoded successfully (${dst.length} bytes)`);
+        levels[i].transcodedFormat = actualFormat;
     } else {
-        console.warn(`Failed to transcode level ${i}. Stopping mip chain.`);
+        console.warn(`Level ${i} failed, stopping mip chain`);
         break;
     }
 }
 
     basisFile.close();
     basisFile.delete(); 
+
+    console.log('[read.js] Transcode summary:');
+    for (let i = 0; i < levels.length; i++) {
+        console.log(`  Level ${i}: isDecompressed=${levels[i].isDecompressed}, format=${levels[i].transcodedFormat}, size=${levels[i].decompressedData?.length || 0}`);
+    }
     
   } else if (header.supercompressionScheme === SUPERCOMPRESSION_ZLIB) {
     throw new Error('Zlib supercompression not yet supported. Use Zstd or uncompressed KTX2.');
