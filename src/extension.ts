@@ -27,9 +27,8 @@ export function activate(context: vscode.ExtensionContext) {
 
       const readUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'read.js'));
       const ktxTranscoderUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'transcoder.js'));
-      const basisJsUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'basis_transcoder.js'));
-      const basisWasmUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'basis_transcoder.wasm'));
-      const mainUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'main.js'));
+      const libktxUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'libktx.js'));
+      const libktxWasmUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'libktx.wasm'));
       const shaderUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'shaders.wgsl'));
       const scriptUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'main.js'));
       // Handle messages from the webview
@@ -61,25 +60,9 @@ export function activate(context: vscode.ExtensionContext) {
         .replace(/\{\{readUri\}\}/g, readUri.toString())
         .replace(/\{\{scriptUri\}\}/g, scriptUri.toString())
         .replace(/\{\{shaderUri\}\}/g, shaderUri.toString())
-        .replace(/\{\{basisJsUri\}\}/g, basisJsUri.toString())
-        .replace(/\{\{basisWasmUri\}\}/g, basisWasmUri.toString())
-        .replace(/\{\{mainUri\}\}/g, mainUri.toString())
         .replace(/\{\{sidebarHtml\}\}/g, sidebarHtml.replace(/`/g, '\\`').replace(/\$/g, '\\$'));
 
-      // panel.webview.html = html;
-      //     <script nonce="${nonce}">
-      //       window.shaderUri = '${shaderUri}';
-      //       // FIXED: Variable name matches transcoder.js expectation
-      //       window.BASIS_JS = "${basisJsUri}";
-      //       window.BASIS_WASM = "${basisWasmUri}";
-      //     </script>
-
-      //     <script nonce="${nonce}" src="${readUri}"></script>
-      //     <script nonce="${nonce}" src="${basisJsUri}"></script>
-
-      //     <script nonce="${nonce}" type="module" src="${mainUri}"></script>
-      //   </body>
-      //   </html>`;
+      panel.webview.html = html;
     })
   );
 }
