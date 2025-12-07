@@ -197,7 +197,7 @@ function getBasisTargetFormatForGPU(device) {
 
 }
 
-async function parseKTX2(arrayBuffer) {
+async function parseKTX2(arrayBuffer,device) {
   const dv = new DataView(arrayBuffer);
 
   // Identifier (12 bytes) - validates that this is truly ktx2 file

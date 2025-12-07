@@ -64,12 +64,13 @@ export function activate(context: vscode.ExtensionContext) {
       html = html
         .replace(/\{\{nonce\}\}/g, nonce)
         .replace(/\{\{cspSource\}\}/g, panel.webview.cspSource)
+        .replace(/\{\{basisJsUri\}\}/g, basisJsUri.toString())
+        .replace(/\{\{basisWasmUri\}\}/g, basisWasmUri.toString())
         .replace(/\{\{readUri\}\}/g, readUri.toString())
         .replace(/\{\{scriptUri\}\}/g, scriptUri.toString())
         .replace(/\{\{shaderUri\}\}/g, shaderUri.toString())
-        .replace(/\{\{sidebarHtml\}\}/g, sidebarHtml.replace(/`/g, '\\`').replace(/\$/g, '\\$'))
-        .replace(/\{\{basisJsUri\}\}/g, basisJsUri.toString())
-        .replace(/\{\{basisWasmUri\}\}/g, basisWasmUri.toString());
+        .replace(/\{\{sidebarHtml\}\}/g, sidebarHtml.replace(/`/g, '\\`').replace(/\$/g, '\\$'));
+        
 
       panel.webview.html = html;
     })
