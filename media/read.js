@@ -1,11 +1,44 @@
 // File for parsing KTX2 files
 // | Identifier | Header | Level Index | DFD | KVD | SGD | Mip Level Array |
 
+let basisModulePromise = null;
+let BasisModule = null;
+
+// Supercompression scheme constants
+const SUPERCOMPRESSION_NONE = 0;
+const SUPERCOMPRESSION_BASIS_LZ = 1;
+const SUPERCOMPRESSION_ZSTD = 2;
+const SUPERCOMPRESSION_ZLIB = 3;
+
+// Load fzstd library for Zstandard decompression
+let fzstdLoaded = false;
+let fzstdDecompress = null;
+
+async function loadFzstd() {
+  if (fzstdLoaded) return;
+  
+  // Load fzstd from CDN
+  const script = document.createElement('script');
+  script.src = 'https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.js';
+  
+  await new Promise((resolve, reject) => {
+    script.onload = resolve;
+    script.onerror = () => reject(new Error('Failed to load fzstd library'));
+    document.head.appendChild(script);
+  });
+  
+  if (typeof fzstd !== 'undefined') {
+    fzstdDecompress = fzstd.decompress;
+    fzstdLoaded = true;
+  } else {
+    throw new Error('fzstd library not available after loading');
+  }
+}
+
 function getNonce() {
   const script = document.currentScript || document.querySelector('script[nonce]');
   return script ? script.nonce : '';
 }
-
 
 // App logger (appends to scrollable log with severity colors)
 const logApp = (...args) => {
@@ -60,44 +93,6 @@ const logApp = (...args) => {
   else if (level === 'warn') console.warn(msg);
   else console.log(msg);
 };
-
-
-// Supercompression scheme constants
-const SUPERCOMPRESSION_NONE = 0;
-const SUPERCOMPRESSION_BASIS_LZ = 1;
-const SUPERCOMPRESSION_ZSTD = 2;
-const SUPERCOMPRESSION_ZLIB = 3;
-
-// Load fzstd library for Zstandard decompression
-let fzstdLoaded = false;
-let fzstdDecompress = null;
-
-async function loadFzstd() {
-  if (fzstdLoaded) return;
-  
-  // Load fzstd from CDN
-  const script = document.createElement('script');
-  script.src = 'https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.js';
-  
-  await new Promise((resolve, reject) => {
-    script.onload = resolve;
-    script.onerror = () => reject(new Error('Failed to load fzstd library'));
-    document.head.appendChild(script);
-  });
-  
-  if (typeof fzstd !== 'undefined') {
-    fzstdDecompress = fzstd.decompress;
-    fzstdLoaded = true;
-  } else {
-    throw new Error('fzstd library not available after loading');
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Basis Universal Transcoder Loader — FIXED
-// -----------------------------------------------------------------------------
-let basisModulePromise = null;
-let BasisModule = null;
 
 function loadScript(url) {
   return new Promise((resolve, reject) => {
@@ -183,7 +178,6 @@ async function loadBasisModule() {
   return basisModulePromise;
 }
 
-
 // -----------------------------------------------------------------------------
 // Helper for Basis files
 // -----------------------------------------------------------------------------
@@ -201,18 +195,10 @@ function getBasisTargetFormatForGPU(device) {
     RGBA32: 13
   };
 
-  // TEMPORARY TEST: Always use RGBA32
+  // use RGBA32
   console.log(`[read.js] Requesting RGBA32 (ID: ${BASIS_FORMAT.RGBA32})`);
   return BASIS_FORMAT.RGBA32;
 
-  if (device.features.has("texture-compression-bc")) {
-    // Use BC1 for RGB textures (more efficient)
-    console.log(`[read.js] Requesting BC1 (ID: ${BASIS_FORMAT.BC1_RGB})`);
-    return BASIS_FORMAT.BC1_RGB;
-  }
-
-  console.log(`[read.js] Requesting RGBA32 (ID: ${BASIS_FORMAT.RGBA32})`);
-  return BASIS_FORMAT.RGBA32;
 }
 
 
