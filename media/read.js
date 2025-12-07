@@ -1,6 +1,44 @@
 // File for parsing KTX2 files
 // | Identifier | Header | Level Index | DFD | KVD | SGD | Mip Level Array |
 
+let basisModulePromise = null;
+let BasisModule = null;
+
+// Supercompression scheme constants
+const SUPERCOMPRESSION_NONE = 0;
+const SUPERCOMPRESSION_BASIS_LZ = 1;
+const SUPERCOMPRESSION_ZSTD = 2;
+const SUPERCOMPRESSION_ZLIB = 3;
+
+// Load fzstd library for Zstandard decompression
+let fzstdLoaded = false;
+let fzstdDecompress = null;
+
+async function loadFzstd() {
+  if (fzstdLoaded) return;
+  
+  // Load fzstd from CDN
+  const script = document.createElement('script');
+  script.src = 'https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.js';
+  
+  await new Promise((resolve, reject) => {
+    script.onload = resolve;
+    script.onerror = () => reject(new Error('Failed to load fzstd library'));
+    document.head.appendChild(script);
+  });
+  
+  if (typeof fzstd !== 'undefined') {
+    fzstdDecompress = fzstd.decompress;
+    fzstdLoaded = true;
+  } else {
+    throw new Error('fzstd library not available after loading');
+  }
+}
+
+function getNonce() {
+  const script = document.currentScript || document.querySelector('script[nonce]');
+  return script ? script.nonce : '';
+}
 
 // App logger (appends to scrollable log with severity colors)
 const logApp = (...args) => {
@@ -56,90 +94,88 @@ const logApp = (...args) => {
   else console.log(msg);
 };
 
+function loadScript(url) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement("script");
+    el.src = url;
+    
+    const nonce = getNonce();
+    if (nonce) {
+      el.setAttribute('nonce', nonce);
+    }
 
-// Supercompression scheme constants
-const SUPERCOMPRESSION_NONE = 0;
-const SUPERCOMPRESSION_BASIS_LZ = 1;
-const SUPERCOMPRESSION_ZSTD = 2;
-const SUPERCOMPRESSION_ZLIB = 3;
-
-// Load fzstd library for Zstandard decompression
-let fzstdLoaded = false;
-let fzstdDecompress = null;
-
-async function loadFzstd() {
-  if (fzstdLoaded) return;
-  
-  // Load fzstd from CDN
-  const script = document.createElement('script');
-  script.src = 'https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.js';
-  
-  await new Promise((resolve, reject) => {
-    script.onload = resolve;
-    script.onerror = () => reject(new Error('Failed to load fzstd library'));
-    document.head.appendChild(script);
+    el.onload = resolve;
+    el.onerror = () => reject(new Error(`Script load error for ${url}`));
+    document.head.appendChild(el);
   });
-  
-  if (typeof fzstd !== 'undefined') {
-    fzstdDecompress = fzstd.decompress;
-    fzstdLoaded = true;
-  } else {
-    throw new Error('fzstd library not available after loading');
-  }
 }
-
-// -----------------------------------------------------------------------------
-// Basis Universal Transcoder Loader
-// -----------------------------------------------------------------------------
-let basisModulePromise = null;
-let BasisModule = null;
 
 async function loadBasisModule() {
   if (basisModulePromise) return basisModulePromise;
 
   basisModulePromise = new Promise(async (resolve, reject) => {
     try {
-      // 1. Load JS file by script tag
-      logApp("Loading basis_transcoder.js...");
-      await loadScript("media/basisu/basis_transcoder.js");
+      const scriptUrl = window.BASIS_JS || "media/basisu/basis_transcoder.js";
+      
+      // 1. Shim module.exports to capture the library
+      const backupModule = window.module;
+      const backupExports = window.exports;
+      window.module = { exports: {} };
+      window.exports = window.module.exports;
 
-      const basisFactory =
-        window.BasisModule ||
-        window.Module ||
-        window.createBasisModule;
+      await loadScript(scriptUrl);
 
-      // Ensure global BasisModule function exists
-      if (typeof basisFactory !== "function") {
-        logApp("basis_transcoder.js did not define BasisModule", "error");
-        return reject(new Error("basis_transcoder.js did not define BasisModule"));
+      let LoadedFunc = window.module.exports;
+      if (typeof LoadedFunc !== 'function') {
+         if (LoadedFunc && typeof LoadedFunc.MSC_TRANSCODER === 'function') {
+             LoadedFunc = LoadedFunc.MSC_TRANSCODER;
+         } else {
+             LoadedFunc = window.MSC_TRANSCODER || window.BasisModule || window.Module;
+         }
       }
 
-      // 2. Load WASM binary
-      logApp("Loading basis_transcoder.wasm...");
-      const wasmBinary = await fetch("media/basisu/basis_transcoder.wasm")
-        .then(r => r.arrayBuffer());
+      window.module = backupModule;
+      window.exports = backupExports;
 
-      logApp("Initializing BasisModule...");
-      basisFactory({ wasmBinary }).then(mod => {
+      if (typeof LoadedFunc !== "function") {
+        return reject(new Error("Could not find BasisModule export"));
+      }
+      
+      BasisModule = LoadedFunc;
+
+      // 2. Load WASM
+      const wasmUrl = window.BASIS_WASM || "media/basisu/basis_transcoder.wasm";
+      const wasmBinary = await fetch(wasmUrl).then(r => {
+        if (!r.ok) throw new Error(`Failed to load WASM: ${r.status}`);
+        return r.arrayBuffer();
+      });
+
+      // 3. Initialize Module
+      BasisModule({
+        wasmBinary
+      }).then(mod => {
         BasisModule = mod;
+
+        try {
+          if (mod.initializeBasis) {
+            mod.initializeBasis();
+            console.log("✓ Basis Universal initialized");
+          } else {
+            console.warn("mod.initializeBasis() missing - this might cause transcoder failure.");
+          }
+        } catch (e) {
+          console.error("Failed to initializeBasis:", e);
+        }
+
         resolve(mod);
       }).catch(reject);
+
     } catch (err) {
       reject(err);
     }
   });
 
   return basisModulePromise;
-}
-
-function loadScript(url) {
-  return new Promise((resolve, reject) => {
-    const el = document.createElement("script");
-    el.src = url;
-    el.onload = resolve;
-    el.onerror = reject;
-    document.head.appendChild(el);
-  });
 }
 
 // -----------------------------------------------------------------------------
@@ -149,16 +185,24 @@ function makeBasisFile(u8) {
   return new BasisModule.BasisFile(u8);
 }
 
-// Choose GPU target (fixed)
 function getBasisTargetFormatForGPU(device) {
-  if (device.features.has("texture-compression-bc")) {
-    return BasisModule.TranscodeTarget.BC7; // best choice for UASTC
-  }
-  return BasisModule.TranscodeTarget.RGBA32;
+  const BASIS_FORMAT = {
+    BC1_RGB: 0,
+    BC3_RGBA: 1,
+    BC4_R: 2,
+    BC5_RG: 3,
+    BC7_RGBA: 6,
+    RGBA32: 13
+  };
+
+  // use RGBA32
+  console.log(`[read.js] Requesting RGBA32 (ID: ${BASIS_FORMAT.RGBA32})`);
+  return BASIS_FORMAT.RGBA32;
+
 }
 
 
-async function parseKTX2(arrayBuffer) {
+async function parseKTX2(arrayBuffer, device) {
   const dv = new DataView(arrayBuffer);
 
   // Identifier (12 bytes) - validates that this is truly ktx2 file
@@ -185,6 +229,13 @@ async function parseKTX2(arrayBuffer) {
     levelCount: dv.getUint32(offset, true), offset: (offset += 4), // Number of mip levels
     supercompressionScheme: dv.getUint32(offset, true), offset: (offset += 4), // Supercompression scheme used (0 = none)
   };
+
+  console.log('[read.js] Header parsed:', {
+  vkFormat: header.vkFormat,
+  supercompressionScheme: header.supercompressionScheme,
+  width: header.pixelWidth,
+  height: header.pixelHeight
+});
 
   // Indexing of data blocks
   const index = {
@@ -245,46 +296,220 @@ async function parseKTX2(arrayBuffer) {
       } catch (e) {
         throw new Error(`Failed to decompress level ${i}: ${e.message}`);
       }
+  }
+
+} else if (header.vkFormat === 0 && header.supercompressionScheme === SUPERCOMPRESSION_NONE) {
+    // Raw UASTC or ETC1S without supercompression
+    logApp("Detected raw Basis Universal texture (no supercompression)");
+    
+    // Load transcoder
+    await loadBasisModule();
+    
+    let basisFile = null;
+    const fileUint8 = new Uint8Array(arrayBuffer);
+    
+    if (BasisModule.KTX2File) {
+      basisFile = new BasisModule.KTX2File(fileUint8);
     }
-  } else if (header.supercompressionScheme === SUPERCOMPRESSION_BASIS_LZ) { // This means ETC1S or UASTC
+    
+    if (!basisFile) {
+      basisFile = new BasisModule.BasisFile(fileUint8);
+    }
+    
+    if (!basisFile.startTranscoding()) {
+      basisFile.close();
+      basisFile.delete();
+      throw new Error("Transcoder failed to initialize");
+    }
+    
+    const isKTX2File = (BasisModule.KTX2File && basisFile instanceof BasisModule.KTX2File);
+    const format = 13; // RGBA32
+    const imageIndex = 0;
+    
+    let transcoderLevelCount = isKTX2File ? basisFile.getLevels() : basisFile.getNumLevels(imageIndex);
+    const safeLevelCount = Math.min(levels.length, transcoderLevelCount);
+    
+    for (let i = 0; i < safeLevelCount; i++) {
+      let dst = null;
+      let status = false;
+      
+      if (isKTX2File) {
+        const size = basisFile.getImageTranscodedSizeInBytes(i, 0, 0, format);
+        if (size === 0) break;
+        
+        dst = new Uint8Array(size);
+        status = basisFile.transcodeImage(dst, i, 0, 0, format, 0, 0);
+      } else {
+        const size = basisFile.getImageTranscodedSizeInBytes(imageIndex, i, format);
+        if (size === 0) break;
+        
+        dst = new Uint8Array(size);
+        status = basisFile.transcodeImage(dst, imageIndex, i, format, 0, 0);
+      }
+      
+      if (status && dst && dst.length > 0) {
+        levels[i].isDecompressed = true;
+        levels[i].decompressedData = dst;
+        levels[i].transcodedFormat = format;
+        console.log(`Level ${i}: Raw Basis → RGBA32 ✓ (${dst.length} bytes)`);
+      } else {
+        break;
+      }
+    }
+    
+    basisFile.close();
+    basisFile.delete();
+    
+} else if (header.supercompressionScheme === SUPERCOMPRESSION_BASIS_LZ) { // This means ETC1S or UASTC
+    console.log('[read.js] Entering BASIS_LZ block');  
     logApp("Detected BASIS-LZ texture (ETC1S or UASTC)");
 
-    
+    // Detect UASTC via DFD color model (166 = UASTC)
+    // BasisLZ covers ETC1S (model 160) and UASTC (model 166)
+    const isUASTC = (dfd && dfd.colorModel === 166);
 
+    // Choose a GPU-friendly target format
+    // UASTC → BC7 is the most correct path
+    const targetFormat = 13; // 6 = BC7 in Basis Transcoder IDs
 
-    // Load transcoder
-    // await loadBasisModule();
+    // 1. Load the transcoder
+    await loadBasisModule();
 
-    const BASIS = await loadBasisModule(); // loads wasm
-    logApp("FINISHED LOADING BASIS", "success");
-    const file = new BASIS.KTX2File(new Uint8Array(data));
-    console.log("supports KTX2?", file.isValid());
-    logApp("Basis file valid: " + file.isValid());
-    
+    let basisFile = null;
+    const fileUint8 = new Uint8Array(arrayBuffer);
 
-    const basisFile = makeBasisFile(
-      new Uint8Array(arrayBuffer, levels[0].byteOffset, levels[0].byteLength)
-    );
-
-    if (!basisFile.isValid()) {
-      throw new Error("Invalid Basis file inside KTX2");
+    // 2. ATTEMPT 1: Check for explicit KTX2File support (common in newer builds)
+    if (BasisModule.KTX2File) {
+      try {
+        basisFile = new BasisModule.KTX2File(fileUint8);
+      } catch (e) {
+        console.warn("KTX2File constructor failed", e);
+      }
     }
 
-    const imageCount = basisFile.getNumImages();
-    if (imageCount === 0) throw new Error("Basis file has no images");
+    // 3. ATTEMPT 2: Fallback to BasisFile with the WHOLE BUFFER
+    // (Some builds auto-detect KTX2 headers inside BasisFile)
+    if (!basisFile) {
+      basisFile = new BasisModule.BasisFile(fileUint8);
+    }
+
+    // 4. Initialize
+    if (!basisFile.startTranscoding()) {
+      basisFile.close();
+      basisFile.delete();
+      throw new Error("Transcoder failed to initialize. (Your basis_transcoder.wasm might lack KTX2 support)");
+    }
+
+    // Detect Class FIRST
+    const isKTX2File = (BasisModule.KTX2File && basisFile instanceof BasisModule.KTX2File);
+
+    let imageCount = 1;
+    if (!isKTX2File) {
+        // Only legacy BasisFile has getNumImages()
+        if (typeof basisFile.getNumImages === 'function') {
+            imageCount = basisFile.getNumImages();
+        }
+    }
+
+    if (imageCount === 0) {
+       basisFile.close();
+       basisFile.delete();
+       throw new Error("File has no images");
+    }
 
     const format = getBasisTargetFormatForGPU(device);
 
-    const bytes = basisFile.transcodeImage(
-      format,
-      0, // image index
-      0  // level index
-    );
+    const imageIndex = 0;
+    
+    // Ask the transcoder how many levels IT sees
+    let transcoderLevelCount = 1; 
+    try {
+        if (isKTX2File) {
+            // FIX: KTX2File uses .getLevels() with no arguments
+            transcoderLevelCount = basisFile.getLevels();
+        } else {
+            // FIX: BasisFile uses .getNumLevels(imageIndex)
+            transcoderLevelCount = basisFile.getNumLevels(imageIndex);
+        }
+    } catch(e) {
+        console.warn("Could not query numLevels from transcoder, defaulting to 1.", e);
+    }
 
-    levels[0].isDecompressed = true;
-    levels[0].decompressedData = bytes;
+    // Loop only up to the minimum of what the Header says and what the Transcoder says
+    const safeLevelCount = Math.min(levels.length, transcoderLevelCount);
+
+    for (let i = 0; i < safeLevelCount; i++) {
+    const levelIndex = i;
+    let dst = null;
+    let status = false;
+    let actualFormat = format; // Track which format was actually used
+
+    try {
+        if (isKTX2File) {
+            // UASTC path
+            const layerIndex = 0;
+            const faceIndex = 0;
+            const RGBA32 = 13;
+            actualFormat = RGBA32;
+
+            const size = basisFile.getImageTranscodedSizeInBytes(
+                levelIndex, layerIndex, faceIndex, RGBA32
+            );
+
+            if (size === 0) {
+                console.warn(`Level ${levelIndex}: no size, stopping`);
+                break;
+            }
+
+            dst = new Uint8Array(size);
+            status = basisFile.transcodeImage(
+                dst, levelIndex, layerIndex, faceIndex, RGBA32, 0, 0
+            );
+
+            console.log(`Level ${i}: UASTC → RGBA32 ${status ? '✓' : '✗'} (${dst.length} bytes)`);
+
+        } else {
+            // ETC1S path
+            const size = basisFile.getImageTranscodedSizeInBytes(
+                imageIndex, levelIndex, format
+            );
+            
+            if (size === 0) {
+                console.warn(`Level ${levelIndex}: no size, stopping`);
+                break;
+            }
+            
+            dst = new Uint8Array(size);
+            status = basisFile.transcodeImage(
+                dst, imageIndex, levelIndex, format, 0, 0
+            );
+
+            console.log(`Level ${i}: ETC1S → format ${format} ${status ? '✓' : '✗'} (${dst.length} bytes)`);
+        }
+    } catch (err) {
+        console.error(`Level ${i} transcode error:`, err);
+        break;
+    }
+
+    // Store result (only if successful)
+    if (status && dst && dst.length > 0) {
+        levels[i].isDecompressed = true;
+        levels[i].decompressedData = dst;
+        levels[i].transcodedFormat = actualFormat;
+    } else {
+        console.warn(`Level ${i} failed, stopping mip chain`);
+        break;
+    }
+}
 
     basisFile.close();
+    basisFile.delete(); 
+
+    console.log('[read.js] Transcode summary:');
+    for (let i = 0; i < levels.length; i++) {
+        console.log(`  Level ${i}: isDecompressed=${levels[i].isDecompressed}, format=${levels[i].transcodedFormat}, size=${levels[i].decompressedData?.length || 0}`);
+    }
+    
   } else if (header.supercompressionScheme === SUPERCOMPRESSION_ZLIB) {
     throw new Error('Zlib supercompression not yet supported. Use Zstd or uncompressed KTX2.');
   } else if (header.supercompressionScheme !== SUPERCOMPRESSION_NONE) {
