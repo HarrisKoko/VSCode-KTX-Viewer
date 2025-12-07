@@ -1,5 +1,26 @@
   // main.js — JPG/PNG/WebP renderer + KTX2 (BC1-BC7) loader using WebGPU
 
+  const NATIVE_BC_FORMATS = {
+  131: 'bc1-rgba-unorm', 132: 'bc1-rgba-unorm-srgb',
+  135: 'bc2-rgba-unorm', 136: 'bc2-rgba-unorm-srgb',
+  137: 'bc3-rgba-unorm', 138: 'bc3-rgba-unorm-srgb',
+  139: 'bc4-r-unorm', 140: 'bc4-r-snorm',
+  141: 'bc5-rg-unorm', 142: 'bc5-rg-snorm',
+  143: 'bc6h-rgb-ufloat', 144: 'bc6h-rgb-float',
+  145: 'bc7-rgba-unorm', 146: 'bc7-rgba-unorm-srgb',
+  //152: 'etc2-rgba8unorm', 153: 'etc2-rgba8unorm-srgb',
+  };
+
+  function getFormatName(vkFormat) {
+    return NATIVE_BC_FORMATS[vkFormat] || `VK Format ${vkFormat}`;
+  }
+
+  function vkFormatToWebGPU(vkFormat) {
+    const format = NATIVE_BC_FORMATS[vkFormat];
+    if (!format) return null;
+    return { format, blockWidth: 4, blockHeight: 4, bytesPerBlock: 16 };
+  }
+  
   // Minimal logger (uses #log in sidebar)
   const log = (msg) => {
     const el = document.getElementById('log');
@@ -608,22 +629,100 @@
         const isBlock = !!formatInfo.blockWidth; // BC formats
         const isPixel = !!formatInfo.bytesPerPixel; // uncompressed
 
-        const { format: wgpuFormat, blockWidth, blockHeight, bytesPerBlock } = formatInfo;
+        let wgpuFormat, blockWidth, blockHeight, bytesPerBlock;
         const formatName = window.getFormatName ? window.getFormatName(header.vkFormat) : `vkFormat ${header.vkFormat}`;
 
+        /*
         if (
-            formatInfo.format.startsWith("etc2") &&
+            wgpuFormat.startsWith("etc2") &&
             !adapter.features.has("texture-compression-etc2")
         ) {
             throw new Error("ETC2 textures are not supported on this GPU/browser.");
         }
 
         if (
-            formatInfo.format.startsWith("astc") &&
+            wgpuFormat.startsWith("astc") &&
             !adapter.features.has("texture-compression-astc")
         ) {
             throw new Error("ASTC textures are not supported on this GPU/browser.");
         }
+            */
+
+
+      // Initialize format variables
+      let mipCount = levels.length || 1;
+      
+      // Check if transcoding happened in read.js
+      const isTranscoded = levels[0]?.isDecompressed;
+
+      if (isTranscoded) {
+        // Transcoded path - data was processed by read.js
+        const tf = levels[0].transcodedFormat;
+        
+        logApp(`Using pre-transcoded Basis data (format ID: ${tf})`, 'info');
+        
+        // Map Basis format ID to WebGPU format
+        if (tf === 0) {
+          wgpuFormat = 'bc1-rgba-unorm';
+          blockWidth = 4; blockHeight = 4; bytesPerBlock = 8;
+        } else if (tf === 1) {
+          wgpuFormat = 'bc3-rgba-unorm';
+          blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
+        } else if (tf === 6) {
+          wgpuFormat = 'bc7-rgba-unorm';
+          blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
+        } else if (tf === 13) {
+          wgpuFormat = 'rgba8unorm';
+          blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
+        } else {
+          logApp(`Unknown transcoded format ID: ${tf}, falling back to RGBA8`, 'warn');
+          wgpuFormat = 'rgba8unorm';
+          blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
+        }
+        
+        // Count valid transcoded mips
+        let validMips = 0;
+        for (let i = 0; i < levels.length; i++) {
+          if (levels[i].isDecompressed) validMips++;
+          else break;
+        }
+        mipCount = validMips;
+        
+        logApp(`Texture transcoded to ${wgpuFormat} (${validMips} mips)`, 'success');
+        
+      } else {
+        // Native format path - no transcoding needed
+        
+        // Check for ETC2 native support
+        const isETC2 = header.vkFormat === 147 || header.vkFormat === 148 || 
+                      header.vkFormat === 149 || header.vkFormat === 152 || 
+                      header.vkFormat === 153;
+        
+        if (isETC2 && adapter.features.has("texture-compression-etc2")) {
+          wgpuFormat = "etc2-rgba8unorm";
+          blockWidth = 4;
+          blockHeight = 4;
+          bytesPerBlock = (header.vkFormat === 152 || header.vkFormat === 153) ? 16 : 8;
+          logApp("Using native ETC2 format", 'info');
+          
+        } else {
+          // Try native BC formats
+          const formatInfo = window.vkFormatToWebGPU(header.vkFormat);
+          
+          if (!formatInfo) {
+            const formatName = window.getFormatName ? window.getFormatName(header.vkFormat) : `vkFormat ${header.vkFormat}`;
+            logApp(`Unsupported vkFormat ${header.vkFormat}. File may need Basis transcoding.`, 'error');
+            throw new Error(`Unsupported format: ${formatName}`);
+          }
+          
+          wgpuFormat = formatInfo.format;
+          blockWidth = formatInfo.blockWidth;
+          blockHeight = formatInfo.blockHeight;
+          bytesPerBlock = formatInfo.bytesPerBlock;
+          logApp(`Using native format: ${wgpuFormat}`, 'info');
+        }
+      }
+
 
         srcTex?.destroy?.();
         srcTex = device.createTexture({
@@ -640,61 +739,41 @@
         }
 
         
-        for (let i = 0; i < levels.length; i++) {
-
-          const lvl = levels[i];
-          if (isPixel) {
-            let raw = window.getLevelData(buf, lvl);
-
-            if (formatInfo.sourceChannels === 3) {
-                const pixelCount = lvl.width * lvl.height;
-                const rgba = new Uint8Array(pixelCount * 4);
-
-                for (let p = 0; p < pixelCount; p++) {
-                    rgba[p*4+0] = raw[p*3+0];
-                    rgba[p*4+1] = raw[p*3+1];
-                    rgba[p*4+2] = raw[p*3+2];
-                    rgba[p*4+3] = 255;
-                }
-                raw = rgba;
-            }
-
-            if (formatInfo.sourceBytesPerPixel === 16 && formatInfo.bytesPerPixel === 8) {
-                // Convert float32 → float16 per component
-                raw = convertRGBA32FtoRGBA16F(raw, lvl.width, lvl.height);
-            }
-
-
-            // Compute row padding
-            const { data, bytesPerRow } = padRows(
-                raw,
-                lvl.width,
-                lvl.height,
-                formatInfo.bytesPerPixel
-            );
-
-            device.queue.writeTexture(
-                { texture: srcTex, mipLevel: i },
-                data,
-                { bytesPerRow },
-                { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 }
-            );
-
-            continue; // Skip BC path
-          }
-
-          const raw = window.getLevelData(buf, lvl);
-          const { data, bytesPerRow, rowsPerImage } =
-            padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, blockWidth, blockHeight);
-          const uploadWidth = Math.ceil(lvl.width / blockWidth) * blockWidth;
-          const uploadHeight = Math.ceil(lvl.height / blockHeight) * blockHeight;
-          device.queue.writeTexture(
-            { texture: srcTex, mipLevel: i },
-            data,
-            { bytesPerRow, rowsPerImage },
-            { width: uploadWidth, height: uploadHeight, depthOrArrayLayers: 1 }
-          );
-        }
+        for (let i = 0; i < mipCount; i++) {
+    const lvl = levels[i];
+    
+    // Get the data - use transcoded if available, otherwise raw
+    let raw;
+    if (lvl.isDecompressed && lvl.decompressedData) {
+      raw = lvl.decompressedData;
+    } else {
+      raw = window.getLevelData(buf, lvl);
+    }
+    
+    // Calculate block dimensions
+    const wBlocks = Math.max(1, Math.ceil(lvl.width / blockWidth));
+    const hBlocks = Math.max(1, Math.ceil(lvl.height / blockHeight));
+    const bytesPerRow = wBlocks * bytesPerBlock;
+    
+    // For compressed textures, upload dimensions must be multiples of block size
+    const uploadWidth = wBlocks * blockWidth;
+    const uploadHeight = hBlocks * blockHeight;
+    
+    // Upload to GPU
+    device.queue.writeTexture(
+      { texture: srcTex, mipLevel: i },
+      raw,
+      { 
+        bytesPerRow: bytesPerRow,
+        rowsPerImage: hBlocks
+      },
+      { 
+        width: uploadWidth,
+        height: uploadHeight,
+        depthOrArrayLayers: 1 
+      }
+    );
+  }
 
         mipCount = levels.length || 1;
         currentMip = 0;
