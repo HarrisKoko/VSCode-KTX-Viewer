@@ -29,9 +29,8 @@ export function activate(context: vscode.ExtensionContext) {
       const ktxTranscoderUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'transcoder.js'));
       const libktxUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'libktx.js'));
       const libktxWasmUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'libktx.wasm'));
-      const mainUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'main.js'));
       const shaderUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'shaders.wgsl'));
-
+      const scriptUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'main.js'));
       // Handle messages from the webview
       panel.webview.onDidReceiveMessage(
         async (message) => {

@@ -16,14 +16,14 @@ window.checkFormatRequirements = checkFormatRequirements;
 window.getFormatName = getFormatName;
 window.vkFormatToWebGPU = vkFormatToWebGPU;
 
-  // Minimal logger (uses #log in sidebar)
-  const log = (msg) => {
-    const el = document.getElementById('log');
-    if (el) {
-      el.style.display = 'block';
-      el.textContent = String(msg);
-    }
-  };
+// Minimal logger (uses #log in sidebar)
+const log = (msg) => {
+  const el = document.getElementById('log');
+  if (el) {
+    el.style.display = 'block';
+    el.textContent = String(msg);
+  }
+};
 
 // App logger (appends to scrollable log with severity colors)
 const logApp = (...args) => {
@@ -79,141 +79,141 @@ const logApp = (...args) => {
   else console.log(msg);
 };
 
-  // Helpers to pad rows
-  function padRows(src, width, height, bytesPerPixel = 4) {
-    const rowStride = width * bytesPerPixel;
-    const aligned = Math.ceil(rowStride / 256) * 256;
-    if (aligned === rowStride) return { data: src, bytesPerRow: rowStride };
+// Helpers to pad rows
+function padRows(src, width, height, bytesPerPixel = 4) {
+  const rowStride = width * bytesPerPixel;
+  const aligned = Math.ceil(rowStride / 256) * 256;
+  if (aligned === rowStride) return { data: src, bytesPerRow: rowStride };
 
-    const dst = new Uint8Array(aligned * height);
-    for (let y = 0; y < height; y++) {
-      const s0 = y * rowStride, d0 = y * aligned;
-      dst.set(src.subarray(s0, s0 + rowStride), d0);
-    }
-    return { data: dst, bytesPerRow: aligned };
+  const dst = new Uint8Array(aligned * height);
+  for (let y = 0; y < height; y++) {
+    const s0 = y * rowStride, d0 = y * aligned;
+    dst.set(src.subarray(s0, s0 + rowStride), d0);
+  }
+  return { data: dst, bytesPerRow: aligned };
+}
+
+function padBlockRowsBC(src, width, height, bytesPerBlock, blockWidth = 4, blockHeight = 4) {
+  const wBlocks = Math.max(1, Math.ceil(width  / blockWidth));
+  const hBlocks = Math.max(1, Math.ceil(height / blockHeight));
+  const rowBytes = wBlocks * bytesPerBlock;
+
+  const aligned = Math.ceil(rowBytes / 256) * 256;
+  if (aligned === rowBytes) {
+    return { data: src, bytesPerRow: rowBytes, rowsPerImage: hBlocks };
   }
 
-  function padBlockRowsBC(src, width, height, bytesPerBlock, blockWidth = 4, blockHeight = 4) {
-    const wBlocks = Math.max(1, Math.ceil(width  / blockWidth));
-    const hBlocks = Math.max(1, Math.ceil(height / blockHeight));
-    const rowBytes = wBlocks * bytesPerBlock;
+  const dst = new Uint8Array(aligned * hBlocks);
+  for (let y = 0; y < hBlocks; y++) {
+    const s0 = y * rowBytes, d0 = y * aligned;
+    dst.set(src.subarray(s0, s0 + rowBytes), d0);
+  }
+  return { data: dst, bytesPerRow: aligned, rowsPerImage: hBlocks };
+}
 
-    const aligned = Math.ceil(rowBytes / 256) * 256;
-    if (aligned === rowBytes) {
-      return { data: src, bytesPerRow: rowBytes, rowsPerImage: hBlocks };
-    }
+async function waitForKTXParser() {
+  let tries = 0;
+  while (typeof window.parseKTX2 !== 'function') {
+    if (tries++ > 500) throw new Error('KTX2 parser not loaded');
+    await new Promise(r => setTimeout(r, 10));
+  }
+}
 
-    const dst = new Uint8Array(aligned * hBlocks);
-    for (let y = 0; y < hBlocks; y++) {
-      const s0 = y * rowBytes, d0 = y * aligned;
-      dst.set(src.subarray(s0, s0 + rowBytes), d0);
-    }
-    return { data: dst, bytesPerRow: aligned, rowsPerImage: hBlocks };
+// side bar and layout setup
+(function ensureLayout() {
+  const canvas = document.getElementById('gfx');
+  if (!canvas) {
+    throw new Error('Canvas with id="gfx" not found in document.');
   }
 
-  async function waitForKTXParser() {
-    let tries = 0;
-    while (typeof window.parseKTX2 !== 'function') {
-      if (tries++ > 500) throw new Error('KTX2 parser not loaded');
-      await new Promise(r => setTimeout(r, 10));
+  // If we already wrapped, do nothing
+  if (document.getElementById('app-wrapper')) return;
+
+  // Clean up any stray text nodes or elements in body (except canvas)
+  const body = document.body;
+  Array.from(body.childNodes).forEach(node => {
+    if (node !== canvas && node.nodeType === Node.TEXT_NODE && node.textContent.trim()) {
+      node.remove();
     }
+  });
+
+  // Create wrapper
+  const wrapper = document.createElement('div');
+  wrapper.id = 'app-wrapper';
+  wrapper.style.display = 'flex';
+  wrapper.style.flexDirection = 'row';
+  wrapper.style.width = '100vw';
+  wrapper.style.height = '100vh';
+  wrapper.style.margin = '0';
+  wrapper.style.padding = '0';
+  wrapper.style.boxSizing = 'border-box';
+  // Insert wrapper before canvas
+  canvas.parentNode.insertBefore(wrapper, canvas);
+
+  // Create sidebar
+  const sidebar = document.createElement('div');
+  sidebar.id = 'sidebar';
+  sidebar.style.width = '320px';
+  sidebar.style.minWidth = '240px';
+  sidebar.style.maxWidth = '420px';
+  sidebar.style.background = '#0b0b0b';
+  sidebar.style.color = '#ddd';
+  sidebar.style.overflow = 'auto';
+  sidebar.style.padding = '12px';
+  sidebar.style.boxSizing = 'border-box';
+  sidebar.style.font = '13px monospace';
+  sidebar.style.borderRight = '1px solid rgba(255,255,255,0.04)';
+  sidebar.style.zIndex = 1000;
+
+  // Load sidebar content from injected template
+  if (window.sidebarTemplate) {
+    sidebar.innerHTML = window.sidebarTemplate;
+  } else {
+    console.error('Sidebar template not found - sidebarTemplate not injected');
+    sidebar.innerHTML = '<h3>KTX2 HDR Preview</h3><p style="color:#f88;">Failed to load UI template</p>';
   }
 
-  // side bar and layout setup
-  (function ensureLayout() {
-    const canvas = document.getElementById('gfx');
-    if (!canvas) {
-      throw new Error('Canvas with id="gfx" not found in document.');
-    }
+  // Put sidebar and canvas into wrapper
+  wrapper.appendChild(sidebar);
 
-    // If we already wrapped, do nothing
-    if (document.getElementById('app-wrapper')) return;
+  // Move the canvas into the right side container (flex grow)
+  const canvasContainer = document.createElement('div');
+  canvasContainer.id = 'canvas-container';
+  canvasContainer.style.flex = '1 1 auto';
+  canvasContainer.style.display = 'flex';
+  canvasContainer.style.alignItems = 'stretch';
+  canvasContainer.style.justifyContent = 'stretch';
+  canvasContainer.style.overflow = 'hidden';
+  canvasContainer.appendChild(canvas);
+  wrapper.appendChild(canvasContainer);
 
-    // Clean up any stray text nodes or elements in body (except canvas)
-    const body = document.body;
-    Array.from(body.childNodes).forEach(node => {
-      if (node !== canvas && node.nodeType === Node.TEXT_NODE && node.textContent.trim()) {
-        node.remove();
-      }
-    });
+  // Style canvas to fill container
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  canvas.style.display = 'block';
+  canvas.style.objectFit = 'contain';
 
-    // Create wrapper
-    const wrapper = document.createElement('div');
-    wrapper.id = 'app-wrapper';
-    wrapper.style.display = 'flex';
-    wrapper.style.flexDirection = 'row';
-    wrapper.style.width = '100vw';
-    wrapper.style.height = '100vh';
-    wrapper.style.margin = '0';
-    wrapper.style.padding = '0';
-    wrapper.style.boxSizing = 'border-box';
-    // Insert wrapper before canvas
-    canvas.parentNode.insertBefore(wrapper, canvas);
-
-    // Create sidebar
-    const sidebar = document.createElement('div');
-    sidebar.id = 'sidebar';
-    sidebar.style.width = '320px';
-    sidebar.style.minWidth = '240px';
-    sidebar.style.maxWidth = '420px';
-    sidebar.style.background = '#0b0b0b';
-    sidebar.style.color = '#ddd';
-    sidebar.style.overflow = 'auto';
-    sidebar.style.padding = '12px';
-    sidebar.style.boxSizing = 'border-box';
-    sidebar.style.font = '13px monospace';
-    sidebar.style.borderRight = '1px solid rgba(255,255,255,0.04)';
-    sidebar.style.zIndex = 1000;
-
-    // Load sidebar content from injected template
-    if (window.sidebarTemplate) {
-      sidebar.innerHTML = window.sidebarTemplate;
-    } else {
-      console.error('Sidebar template not found - sidebarTemplate not injected');
-      sidebar.innerHTML = '<h3>KTX2 HDR Preview</h3><p style="color:#f88;">Failed to load UI template</p>';
-    }
-
-    // Put sidebar and canvas into wrapper
-    wrapper.appendChild(sidebar);
-
-    // Move the canvas into the right side container (flex grow)
-    const canvasContainer = document.createElement('div');
-    canvasContainer.id = 'canvas-container';
-    canvasContainer.style.flex = '1 1 auto';
-    canvasContainer.style.display = 'flex';
-    canvasContainer.style.alignItems = 'stretch';
-    canvasContainer.style.justifyContent = 'stretch';
-    canvasContainer.style.overflow = 'hidden';
-    canvasContainer.appendChild(canvas);
-    wrapper.appendChild(canvasContainer);
-
-    // Style canvas to fill container
-    canvas.style.width = '100%';
-    canvas.style.height = '100%';
-    canvas.style.display = 'block';
-    canvas.style.objectFit = 'contain';
-
-    // Ensure body has no stray content showing
-    document.body.style.margin = '0';
-    document.body.style.padding = '0';
-    document.body.style.overflow = 'hidden';
-    document.body.style.background = '#000';
-  })();
+  // Ensure body has no stray content showing
+  document.body.style.margin = '0';
+  document.body.style.padding = '0';
+  document.body.style.overflow = 'hidden';
+  document.body.style.background = '#000';
+})();
 
   // main WebGPU setup
-  (async () => {
-    try {
-      if (!('gpu' in navigator)) { 
-        logApp('WebGPU not available in this browser.', 'error'); 
-        throw new Error('WebGPU not available');
-      }
+(async () => {
+  try {
+    if (!('gpu' in navigator)) { 
+      logApp('WebGPU not available in this browser.', 'error'); 
+      throw new Error('WebGPU not available');
+    }
 
-      const canvas  = document.getElementById('gfx');
-      const context = canvas.getContext('webgpu');
-      if (!context) { 
-        logApp('Failed to get WebGPU context.', 'error'); 
-        throw new Error('Failed to get WebGPU context');
-      }
+    const canvas  = document.getElementById('gfx');
+    const context = canvas.getContext('webgpu');
+    if (!context) { 
+      logApp('Failed to get WebGPU context.', 'error'); 
+      throw new Error('Failed to get WebGPU context');
+    }
 
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) { 
@@ -247,399 +247,323 @@ const logApp = (...args) => {
     device.addEventListener("uncapturederror", (event) => {
       console.error("WEBGPU ERROR:", event.error);
     });
-
-  
-
-      device.addEventListener?.('uncapturederror', (e) => {
-        console.error('WebGPU uncaptured error:', e.error || e);
-        logApp('WebGPU: ' + (e.error?.message || e.message || 'unknown error'), 'error');
-      });
-
-      logApp('WebGPU initialized successfully', 'success');
-
-      if (!document.getElementById('gltf-controls')) {
-        const fileInput = document.getElementById('file');
-        const anchor = fileInput ? fileInput.parentNode : document.getElementById('sidebar');
-        
-        if (anchor) {
-          const div = document.createElement('div');
-          div.id = 'gltf-controls';
-          div.style.cssText = 'margin-top:8px; margin-bottom:12px; display:none; padding:8px; background:#1a1a1a; border-radius:4px; border:1px solid #333;';
-          div.innerHTML = `
-            <div style="font-size:12px; margin-bottom:6px; color:#8cf;">glTF File Detected</div>
-            <button id="validate-btn" style="width:100%; padding:6px 12px; background:#0e639c; color:white; border:none; border-radius:4px; cursor:pointer; font-family:monospace;">Validate glTF</button>
-          `;
-          if (fileInput) anchor.parentNode.insertBefore(div, anchor.nextSibling);
-          else anchor.appendChild(div);
-        }
-      }
-
-      const format = navigator.gpu.getPreferredCanvasFormat();
-
-      // UI refs (now guaranteed to exist either via template or injection)
-      const evInput = document.getElementById('ev');
-      const evVal   = document.getElementById('evv');
-      const fileInp = document.getElementById('file');
-      const stat    = document.getElementById('stat');
-      const meta    = document.getElementById('meta');
-      const filterMode = document.getElementById('filterMode');
-
-      // glTF specific UI
-      const gltfControls = document.getElementById('gltf-controls');
-      const validateBtn = document.getElementById('validate-btn');
-
-      const mipControls = document.getElementById('mip-controls');
-      const mipSlider   = document.getElementById('mipSlider');
-      const mipLabel    = document.getElementById('mipLabel');
-      const mipOnlyBox  = document.getElementById('mipOnly');
-
-      const texInfo = document.getElementById('texInfo');
-      const texInfoContent = document.getElementById('texInfoContent');
-
-      const channelR = document.getElementById('channelR');
-      const channelG = document.getElementById('channelG');
-      const channelB = document.getElementById('channelB');
-      const channelA = document.getElementById('channelA');
-      const channelRVal = document.getElementById('channelRVal');
-      const channelGVal = document.getElementById('channelGVal');
-      const channelBVal = document.getElementById('channelBVal');
-      const channelAVal = document.getElementById('channelAVal');
-      const channelReset = document.getElementById('channelReset');
-
-      // Get channel multipliers
-      function getChannelMultipliers() {
-        return {
-          r: parseFloat(channelR.value),
-          g: parseFloat(channelG.value),
-          b: parseFloat(channelB.value),
-          a: parseFloat(channelA.value)
-        };
-      }
-
-      // Format bytes for display
-      function formatBytes(bytes) {
-        if (bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i];
-      }
-
-      // Calculate GPU memory for a texture
-      function calculateGPUMemory(width, height, format, mipLevels) {
-        // Bytes per pixel for different formats
-        const formatSizes = {
-          'rgba8unorm': 4,
-          'bc1-rgba-unorm': 0.5,  // 4 bits per pixel
-          'bc2-rgba-unorm': 1,    // 8 bits per pixel
-          'bc3-rgba-unorm': 1,    // 8 bits per pixel
-          'bc4-r-unorm': 0.5,     // 4 bits per pixel
-          'bc5-rg-unorm': 1,      // 8 bits per pixel
-          'bc6h-rgb-ufloat': 1,   // 8 bits per pixel
-          'bc7-rgba-unorm': 1     // 8 bits per pixel
-        };
-
-        const bytesPerPixel = formatSizes[format] || 4;
-        let totalBytes = 0;
-
-        // Calculate for each mip level
-        for (let i = 0; i < mipLevels; i++) {
-          const mipWidth = Math.max(1, width >> i);
-          const mipHeight = Math.max(1, height >> i);
-          totalBytes += mipWidth * mipHeight * bytesPerPixel;
-        }
-
-        return totalBytes;
-      }
-
-      // Update texture info panel
-      function updateTextureInfo(fileSize, width, height, format, mipLevels, fileName, metadata = null) {
-        const gpuMemory = calculateGPUMemory(width, height, format, mipLevels);
-        const aspectRatio = (width / height).toFixed(3);
-        
-        let html = `<div style="color:#8cf;">Dimensions:</div>`;
-        html += `<div style="margin-left:8px; margin-bottom:4px;">${width} × ${height} (${aspectRatio}:1)</div>`;
-        
-        html += `<div style="color:#8cf;">Format:</div>`;
-        html += `<div style="margin-left:8px; margin-bottom:4px;">${format}</div>`;
-        
-        html += `<div style="color:#8cf;">Mip Levels:</div>`;
-        html += `<div style="margin-left:8px; margin-bottom:4px;">${mipLevels}</div>`;
-        
-        html += `<div style="color:#8cf;">File Size:</div>`;
-        html += `<div style="margin-left:8px; margin-bottom:4px;">${formatBytes(fileSize)}</div>`;
-        
-        html += `<div style="color:#8cf;">GPU Memory (Estimated):</div>`;
-        html += `<div style="margin-left:8px; margin-bottom:4px;">${formatBytes(gpuMemory)}</div>`;
-        
-        const compressionRatio = fileSize > 0 ? (gpuMemory / fileSize).toFixed(2) : 'N/A';
-        html += `<div style="color:#8cf;">Compression:</div>`;
-        html += `<div style="margin-left:8px; margin-bottom:4px;">${compressionRatio}x (GPU/File)</div>`;
-        
-        // Add metadata if provided (for KTX2 files)
-        if (metadata) {
-          if (metadata.supercompression) {
-            html += `<div style="color:#8cf;">Supercompression:</div>`;
-            html += `<div style="margin-left:8px; margin-bottom:4px;">${metadata.supercompression}</div>`;
-          }
-          if (metadata.kvd) {
-            html += `<div style="color:#8cf;">KVD:</div>`;
-            html += `<div style="margin-left:8px; margin-bottom:4px;">${metadata.kvd}</div>`;
-          }
-          if (metadata.dfd) {
-            html += `<div style="color:#8cf;">DFD:</div>`;
-            html += `<div style="margin-left:8px;">${metadata.dfd}</div>`;
-          }
-        }
-        
-        texInfoContent.innerHTML = html;
-        texInfo.style.display = 'block';
-      }
-
-      // Swapchain configuration using canvas container size
-      let lastW = 0, lastH = 0;
-      function configureIfNeeded() {
-        // Use canvas.clientWidth/Height to respect layout
-        const dpr = 1;
-        const w = Math.max(1, Math.floor(canvas.clientWidth  * dpr));
-        const h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
-        if (w !== lastW || h !== lastH) {
-          canvas.width  = w;
-          canvas.height = h;
-          context.configure({ device, format, alphaMode: 'opaque' });
-          lastW = w; lastH = h;
-        }
-      }
-      new ResizeObserver(configureIfNeeded).observe(document.getElementById('canvas-container'));
-      configureIfNeeded();
-
-      // Uniform buffer for parameters
-      const uniformBuf = device.createBuffer({
-        size: 256,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
-      });
-      let exposureEV = 0;
-      function updateUniforms() {
-        const mul = Math.pow(2, exposureEV);
-        const ch = getChannelMultipliers();
-        const arr = new Float32Array([exposureEV, mul, lastW, lastH, ch.r, ch.g, ch.b, ch.a]);
-        device.queue.writeBuffer(uniformBuf, 0, arr.buffer);
-      }
-
-      evInput.oninput = () => {
-        exposureEV = parseFloat(evInput.value);
-        evVal.textContent = evInput.value;
-      };
-
-      // glTF Validation Handler
-      if (validateBtn) {
-          validateBtn.onclick = () => {
-            if (window.validateCurrentGltf) {
-              window.validateCurrentGltf();
-            } else {
-              logApp('Validation logic not found.', 'error');
-            }
-          };
-      }
-
-      // Texture sampler (recreated when filter mode changes)
-      function createSampler(mode) {
-        if (mode === 'nearest') {
-          return device.createSampler({ 
-            magFilter: 'nearest', 
-            minFilter: 'nearest',
-            mipmapFilter: 'nearest'
-          });
-        } else if (mode === 'bilinear') {
-          return device.createSampler({ 
-            magFilter: 'linear', 
-            minFilter: 'linear',
-            mipmapFilter: 'nearest'  // Sharp mip transitions
-          });
-        } else if (mode === 'anisotropic') {
-          return device.createSampler({ 
-            magFilter: 'linear', 
-            minFilter: 'linear',
-            mipmapFilter: 'linear',
-            maxAnisotropy: 16  // High quality anisotropic filtering
-          });
-        } else {  // trilinear (default)
-          return device.createSampler({ 
-            magFilter: 'linear', 
-            minFilter: 'linear',
-            mipmapFilter: 'linear'
-          });
-        }
-      }
-      let sampler = createSampler('trilinear');
-
-      filterMode.onchange = () => {
-        sampler = createSampler(filterMode.value);
-        if (texPipeline) texBindGroup = makeTexBindGroup();
-      };
-
-      // Channel slider inputs
-      channelR.oninput = () => { channelRVal.textContent = parseFloat(channelR.value).toFixed(2); };
-      channelG.oninput = () => { channelGVal.textContent = parseFloat(channelG.value).toFixed(2); };
-      channelB.oninput = () => { channelBVal.textContent = parseFloat(channelB.value).toFixed(2); };
-      channelA.oninput = () => { channelAVal.textContent = parseFloat(channelA.value).toFixed(2); };
-
-      // Reset button
-      channelReset.onclick = () => {
-        channelR.value = 1;
-        channelG.value = 1;
-        channelB.value = 1;
-        channelA.value = 0;
-        channelRVal.textContent = '1.00';
-        channelGVal.textContent = '1.00';
-        channelBVal.textContent = '1.00';
-        channelAVal.textContent = '0.00';
-      };
-
-      // Initial placeholder texture
-      function checkerRGBA8() {
-        return new Uint8Array([
-          255,255,255,255,   32,32,32,255,
-          32,32,32,255,   255,255,255,255
-        ]);
-      }
-
-    let srcTex = device.createTexture({
-      size: { width: 2, height: 2, depthOrArrayLayers: 1 },
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.TEXTURE_BINDING
-           | GPUTextureUsage.COPY_DST
-           | GPUTextureUsage.RENDER_ATTACHMENT
+    device.addEventListener?.('uncapturederror', (e) => {
+      console.error('WebGPU uncaptured error:', e.error || e);
+      logApp('WebGPU: ' + (e.error?.message || e.message || 'unknown error'), 'error');
     });
-    {
-      const raw = checkerRGBA8();
-      const { data, bytesPerRow } = padRows(raw, 2, 2);
-      device.queue.writeTexture({ texture: srcTex }, data, { bytesPerRow }, { width: 2, height: 2 });
-    }
-    let srcView = srcTex.createView();
 
-async function transcodeFullKTX2(fileBuffer) {
-const m = await initLibKTX();
+    logApp('WebGPU initialized successfully', 'success');
 
-  let texture = null;
-  try {
-    // 1. LOAD TEXTURE
-    try {
-      const data = new Uint8Array(fileBuffer);
-      texture = new m.ktxTexture2(data);
-    } catch (e) {
-      throw new Error(`Failed to create ktxTexture2: ${e.message}`);
-    }
-    
-    // 2. CHECK TRANSCODING NEEDS
-    let shouldTranscode = false;
-    if (texture.needsTranscoding && typeof texture.needsTranscoding === 'function') {
-      shouldTranscode = texture.needsTranscoding;
-    } else if (texture.vkFormat === 0) {
-      shouldTranscode = true;
-    }
-
-    // 3. TRANSCODE
-    if (shouldTranscode) {
-      let targetFormat = (
-        m.TranscodeTarget?.BC7_RGBA?.value ??
-        m.TranscodeTarget?.BC7_RGBA ??
-        0x93 
-      );
-
-      if (m.TranscodeTarget && m.TranscodeTarget.BC7_M5_RGBA !== undefined) {
-        targetFormat = m.TranscodeTarget.BC7_M5_RGBA.value || m.TranscodeTarget.BC7_M5_RGBA;
-      }
+    if (!document.getElementById('gltf-controls')) {
+      const fileInput = document.getElementById('file');
+      const anchor = fileInput ? fileInput.parentNode : document.getElementById('sidebar');
       
-      if (!texture.transcodeBasis(targetFormat, 0)) {
-        throw new Error("libktx transcoding failed");
+      if (anchor) {
+        const div = document.createElement('div');
+        div.id = 'gltf-controls';
+        div.style.cssText = 'margin-top:8px; margin-bottom:12px; display:none; padding:8px; background:#1a1a1a; border-radius:4px; border:1px solid #333;';
+        div.innerHTML = `
+          <div style="font-size:12px; margin-bottom:6px; color:#8cf;">glTF File Detected</div>
+          <button id="validate-btn" style="width:100%; padding:6px 12px; background:#0e639c; color:white; border:none; border-radius:4px; cursor:pointer; font-family:monospace;">Validate glTF</button>
+        `;
+        if (fileInput) anchor.parentNode.insertBefore(div, anchor.nextSibling);
+        else anchor.appendChild(div);
       }
     }
 
-  // 4. GET TEXTURE DATA
-    const mips = [];
-    const numLevels = texture.numLevels || 1; // Default to 1 if property is missing
+    const format = navigator.gpu.getPreferredCanvasFormat();
 
-    for (let i = 0; i < numLevels; i++) {
-      let mipData = null;
+    // UI refs (now guaranteed to exist either via template or injection)
+    const evInput = document.getElementById('ev');
+    const evVal   = document.getElementById('evv');
+    const fileInp = document.getElementById('file');
+    const stat    = document.getElementById('stat');
+    const meta    = document.getElementById('meta');
+    const filterMode = document.getElementById('filterMode');
 
-      // Use the API exposed in your log: getImage(level, layer, face)
-      if (texture.getImage) {
-          mipData = texture.getImage(i, 0, 0);
-      } else {
-          throw new Error("texture.getImage() is missing, but required for this libktx version.");
-      }
+    // glTF specific UI
+    const gltfControls = document.getElementById('gltf-controls');
+    const validateBtn = document.getElementById('validate-btn');
 
-      // If it returns a view into WASM memory, we MUST copy it
-      // because texture.delete() will invalidate the memory.
-      const mipCopy = new Uint8Array(mipData);
+    const mipControls = document.getElementById('mip-controls');
+    const mipSlider   = document.getElementById('mipSlider');
+    const mipLabel    = document.getElementById('mipLabel');
+    const mipOnlyBox  = document.getElementById('mipOnly');
 
-      mips.push({
-        data: mipCopy,
-        width: Math.max(1, texture.baseWidth >> i),
-        height: Math.max(1, texture.baseHeight >> i)
-      });
+    const texInfo = document.getElementById('texInfo');
+    const texInfoContent = document.getElementById('texInfoContent');
+
+    const channelR = document.getElementById('channelR');
+    const channelG = document.getElementById('channelG');
+    const channelB = document.getElementById('channelB');
+    const channelA = document.getElementById('channelA');
+    const channelRVal = document.getElementById('channelRVal');
+    const channelGVal = document.getElementById('channelGVal');
+    const channelBVal = document.getElementById('channelBVal');
+    const channelAVal = document.getElementById('channelAVal');
+    const channelReset = document.getElementById('channelReset');
+
+    // Get channel multipliers
+    function getChannelMultipliers() {
+      return {
+        r: parseFloat(channelR.value),
+        g: parseFloat(channelG.value),
+        b: parseFloat(channelB.value),
+        a: parseFloat(channelA.value)
+      };
     }
 
-    return mips;
+    // Format bytes for display
+    function formatBytes(bytes) {
+      if (bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i];
+    }
 
-  } catch(e) {
-    console.error("KTX2 Processing Error:", e);
-    throw e;
-  } finally {
-    if (texture && texture.delete) texture.delete();
-  }
-}
-
-      // Mip state
-      let currentMip = 0;
-      let mipCount = 1;
-      mipSlider.oninput = () => {
-        currentMip = Math.floor(parseFloat(mipSlider.value));
-        mipLabel.textContent = currentMip;
-        applySelectedMip();
+    // Calculate GPU memory for a texture
+    function calculateGPUMemory(width, height, format, mipLevels) {
+      // Bytes per pixel for different formats
+      const formatSizes = {
+        'rgba8unorm': 4,
+        'bc1-rgba-unorm': 0.5,  // 4 bits per pixel
+        'bc2-rgba-unorm': 1,    // 8 bits per pixel
+        'bc3-rgba-unorm': 1,    // 8 bits per pixel
+        'bc4-r-unorm': 0.5,     // 4 bits per pixel
+        'bc5-rg-unorm': 1,      // 8 bits per pixel
+        'bc6h-rgb-ufloat': 1,   // 8 bits per pixel
+        'bc7-rgba-unorm': 1     // 8 bits per pixel
       };
-      mipOnlyBox.onchange = () => {
-        applySelectedMip();
-      };
 
-      // loaders
-      async function createMipImages(imageBitmap) {
-        const w = imageBitmap.width, h = imageBitmap.height;
-        const mips = [];
-        const can = (typeof OffscreenCanvas !== 'undefined') ? new OffscreenCanvas(1,1) : document.createElement('canvas');
-        const ctx = can.getContext('2d');
-        let pw = w, ph = h;
-        while (true) {
-          can.width = pw; can.height = ph;
-          ctx.clearRect(0,0,pw,ph);
-          ctx.drawImage(imageBitmap, 0, 0, pw, ph);
-          const imgData = ctx.getImageData(0, 0, pw, ph);
-          mips.push({ width: pw, height: ph, data: new Uint8Array(imgData.data.buffer) });
-          if (pw === 1 && ph === 1) break;
-          pw = Math.max(1, Math.floor(pw / 2));
-          ph = Math.max(1, Math.floor(ph / 2));
+      const bytesPerPixel = formatSizes[format] || 4;
+      let totalBytes = 0;
+
+      // Calculate for each mip level
+      for (let i = 0; i < mipLevels; i++) {
+        const mipWidth = Math.max(1, width >> i);
+        const mipHeight = Math.max(1, height >> i);
+        totalBytes += mipWidth * mipHeight * bytesPerPixel;
+      }
+
+      return totalBytes;
+    }
+
+    // Update texture info panel
+    function updateTextureInfo(fileSize, width, height, format, mipLevels, fileName, metadata = null) {
+      const gpuMemory = calculateGPUMemory(width, height, format, mipLevels);
+      const aspectRatio = (width / height).toFixed(3);
+      
+      let html = `<div style="color:#8cf;">Dimensions:</div>`;
+      html += `<div style="margin-left:8px; margin-bottom:4px;">${width} × ${height} (${aspectRatio}:1)</div>`;
+      
+      html += `<div style="color:#8cf;">Format:</div>`;
+      html += `<div style="margin-left:8px; margin-bottom:4px;">${format}</div>`;
+      
+      html += `<div style="color:#8cf;">Mip Levels:</div>`;
+      html += `<div style="margin-left:8px; margin-bottom:4px;">${mipLevels}</div>`;
+      
+      html += `<div style="color:#8cf;">File Size:</div>`;
+      html += `<div style="margin-left:8px; margin-bottom:4px;">${formatBytes(fileSize)}</div>`;
+      
+      html += `<div style="color:#8cf;">GPU Memory (Estimated):</div>`;
+      html += `<div style="margin-left:8px; margin-bottom:4px;">${formatBytes(gpuMemory)}</div>`;
+      
+      const compressionRatio = fileSize > 0 ? (gpuMemory / fileSize).toFixed(2) : 'N/A';
+      html += `<div style="color:#8cf;">Compression:</div>`;
+      html += `<div style="margin-left:8px; margin-bottom:4px;">${compressionRatio}x (GPU/File)</div>`;
+      
+      // Add metadata if provided (for KTX2 files)
+      if (metadata) {
+        if (metadata.supercompression) {
+          html += `<div style="color:#8cf;">Supercompression:</div>`;
+          html += `<div style="margin-left:8px; margin-bottom:4px;">${metadata.supercompression}</div>`;
         }
-        return mips;
+        if (metadata.kvd) {
+          html += `<div style="color:#8cf;">KVD:</div>`;
+          html += `<div style="margin-left:8px; margin-bottom:4px;">${metadata.kvd}</div>`;
+        }
+        if (metadata.dfd) {
+          html += `<div style="color:#8cf;">DFD:</div>`;
+          html += `<div style="margin-left:8px;">${metadata.dfd}</div>`;
+        }
       }
-
-      async function loadImageToTexture(file) {
-        logApp(`Loading ${file.name}...`, 'info');
-        const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
-
-        const levels = Math.floor(Math.log2(Math.max(1, Math.max(bmp.width, bmp.height)))) + 1;
-        srcTex?.destroy?.();
-        srcTex = device.createTexture({
-          size: { width: bmp.width, height: bmp.height, depthOrArrayLayers: 1 },
-          format: 'rgba8unorm',
-          mipLevelCount: levels,
-          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
-        });
-
-        srcView = srcTex.createView();
-        texBindGroup = makeTexBindGroup();
-
       
+      texInfoContent.innerHTML = html;
+      texInfo.style.display = 'block';
+    }
+
+    // Swapchain configuration using canvas container size
+    let lastW = 0, lastH = 0;
+    function configureIfNeeded() {
+      // Use canvas.clientWidth/Height to respect layout
+      const dpr = 1;
+      const w = Math.max(1, Math.floor(canvas.clientWidth  * dpr));
+      const h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+      if (w !== lastW || h !== lastH) {
+        canvas.width  = w;
+        canvas.height = h;
+        context.configure({ device, format, alphaMode: 'opaque' });
+        lastW = w; lastH = h;
+      }
+    }
+    new ResizeObserver(configureIfNeeded).observe(document.getElementById('canvas-container'));
+    configureIfNeeded();
+
+    // Uniform buffer for parameters
+    const uniformBuf = device.createBuffer({
+      size: 256,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+    });
+    let exposureEV = 0;
+    function updateUniforms() {
+      const mul = Math.pow(2, exposureEV);
+      const ch = getChannelMultipliers();
+      const arr = new Float32Array([exposureEV, mul, lastW, lastH, ch.r, ch.g, ch.b, ch.a]);
+      device.queue.writeBuffer(uniformBuf, 0, arr.buffer);
+    }
+
+    evInput.oninput = () => {
+      exposureEV = parseFloat(evInput.value);
+      evVal.textContent = evInput.value;
+    };
+
+    // glTF Validation Handler
+    if (validateBtn) {
+        validateBtn.onclick = () => {
+          if (window.validateCurrentGltf) {
+            window.validateCurrentGltf();
+          } else {
+            logApp('Validation logic not found.', 'error');
+          }
+        };
+    }
+
+    // Texture sampler (recreated when filter mode changes)
+    function createSampler(mode) {
+      if (mode === 'nearest') {
+        return device.createSampler({ 
+          magFilter: 'nearest', 
+          minFilter: 'nearest',
+          mipmapFilter: 'nearest'
+        });
+      } else if (mode === 'bilinear') {
+        return device.createSampler({ 
+          magFilter: 'linear', 
+          minFilter: 'linear',
+          mipmapFilter: 'nearest'  // Sharp mip transitions
+        });
+      } else if (mode === 'anisotropic') {
+        return device.createSampler({ 
+          magFilter: 'linear', 
+          minFilter: 'linear',
+          mipmapFilter: 'linear',
+          maxAnisotropy: 16  // High quality anisotropic filtering
+        });
+      } else {  // trilinear (default)
+        return device.createSampler({ 
+          magFilter: 'linear', 
+          minFilter: 'linear',
+          mipmapFilter: 'linear'
+        });
+      }
+    }
+    let sampler = createSampler('trilinear');
+
+    filterMode.onchange = () => {
+      sampler = createSampler(filterMode.value);
+      if (texPipeline) texBindGroup = makeTexBindGroup();
+    };
+
+    // Channel slider inputs
+    channelR.oninput = () => { channelRVal.textContent = parseFloat(channelR.value).toFixed(2); };
+    channelG.oninput = () => { channelGVal.textContent = parseFloat(channelG.value).toFixed(2); };
+    channelB.oninput = () => { channelBVal.textContent = parseFloat(channelB.value).toFixed(2); };
+    channelA.oninput = () => { channelAVal.textContent = parseFloat(channelA.value).toFixed(2); };
+
+    // Reset button
+    channelReset.onclick = () => {
+      channelR.value = 1;
+      channelG.value = 1;
+      channelB.value = 1;
+      channelA.value = 0;
+      channelRVal.textContent = '1.00';
+      channelGVal.textContent = '1.00';
+      channelBVal.textContent = '1.00';
+      channelAVal.textContent = '0.00';
+    };
+
+    // Initial placeholder texture
+    function checkerRGBA8() {
+      return new Uint8Array([
+        255,255,255,255,   32,32,32,255,
+        32,32,32,255,   255,255,255,255
+      ]);
+    }
+
+  let srcTex = device.createTexture({
+    size: { width: 2, height: 2, depthOrArrayLayers: 1 },
+    format: 'rgba8unorm',
+    usage: GPUTextureUsage.TEXTURE_BINDING
+          | GPUTextureUsage.COPY_DST
+          | GPUTextureUsage.RENDER_ATTACHMENT
+  });
+  {
+    const raw = checkerRGBA8();
+    const { data, bytesPerRow } = padRows(raw, 2, 2);
+    device.queue.writeTexture({ texture: srcTex }, data, { bytesPerRow }, { width: 2, height: 2 });
+  }
+  let srcView = srcTex.createView();
+
+  // Mip state
+  let currentMip = 0;
+  let mipCount = 1;
+  mipSlider.oninput = () => {
+    currentMip = Math.floor(parseFloat(mipSlider.value));
+    mipLabel.textContent = currentMip;
+    applySelectedMip();
+  };
+  mipOnlyBox.onchange = () => {
+    applySelectedMip();
+  };
+
+  // loaders
+  async function createMipImages(imageBitmap) {
+    const w = imageBitmap.width, h = imageBitmap.height;
+    const mips = [];
+    const can = (typeof OffscreenCanvas !== 'undefined') ? new OffscreenCanvas(1,1) : document.createElement('canvas');
+    const ctx = can.getContext('2d');
+    let pw = w, ph = h;
+    while (true) {
+      can.width = pw; can.height = ph;
+      ctx.clearRect(0,0,pw,ph);
+      ctx.drawImage(imageBitmap, 0, 0, pw, ph);
+      const imgData = ctx.getImageData(0, 0, pw, ph);
+      mips.push({ width: pw, height: ph, data: new Uint8Array(imgData.data.buffer) });
+      if (pw === 1 && ph === 1) break;
+      pw = Math.max(1, Math.floor(pw / 2));
+      ph = Math.max(1, Math.floor(ph / 2));
+    }
+    return mips;
+  }
+
+  async function loadImageToTexture(file) {
+    logApp(`Loading ${file.name}...`, 'info');
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+
+    const levels = Math.floor(Math.log2(Math.max(1, Math.max(bmp.width, bmp.height)))) + 1;
+    srcTex?.destroy?.();
+    srcTex = device.createTexture({
+      size: { width: bmp.width, height: bmp.height, depthOrArrayLayers: 1 },
+      format: 'rgba8unorm',
+      mipLevelCount: levels,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
+    });
+
+    srcView = srcTex.createView();
+    texBindGroup = makeTexBindGroup();
+
+
 // console.log('adapter.features:', Array.from(adapter.features));
 // console.log('wgpuFormat chosen:', wgpuFormat);
 // if (transcodedLevels) console.log('transcodedLevels[0]:', { len: transcodedLevels[0].data.length, w: transcodedLevels[0].width, h: transcodedLevels[0].height });
@@ -695,499 +619,499 @@ const m = await initLibKTX();
 //     depthOrArrayLayers: 1
 //   }
 
-      device.queue.copyExternalImageToTexture(
-        { source: bmp },
-        { texture: srcTex },
-        { width: bmp.width, height: bmp.height }
-      );
+    device.queue.copyExternalImageToTexture(
+      { source: bmp },
+      { texture: srcTex },
+      { width: bmp.width, height: bmp.height }
+    );
 
-        const mipImages = await createMipImages(bmp);
-        for (let i = 0; i < mipImages.length; i++) {
-          const m = mipImages[i];
-          const { data, bytesPerRow } = padRows(m.data, m.width, m.height, 4);
-          device.queue.writeTexture(
-            { texture: srcTex, mipLevel: i },
-            data,
-            { bytesPerRow },
-            { width: m.width, height: m.height, depthOrArrayLayers: 1 }
-          );
-        }
-
-        srcView = srcTex.createView();
-        mipCount = levels;
-        currentMip = 0;
-        mipSlider.min = 0;
-        mipSlider.max = Math.max(0, mipCount - 1);
-        mipSlider.value = 0;
-        mipLabel.textContent = '0';
-        mipControls.style.display = mipCount > 1 ? 'block' : 'none';
-
-        bmp.close?.();
-        stat.textContent = `Loaded ${file.name} (${srcTex.size?.width || '??'}×${srcTex.size?.height || '??'})`;
-        meta.textContent = '';
-        if (texPipeline) texBindGroup = makeTexBindGroup();
-        
-        // Update texture info panel
-        updateTextureInfo(file.size, bmp.width, bmp.height, 'rgba8unorm', levels, file.name);
-        
-        logApp(`Successfully loaded ${file.name} (${bmp.width}×${bmp.height}, ${levels} mips)`, 'success');
+      const mipImages = await createMipImages(bmp);
+      for (let i = 0; i < mipImages.length; i++) {
+        const m = mipImages[i];
+        const { data, bytesPerRow } = padRows(m.data, m.width, m.height, 4);
+        device.queue.writeTexture(
+          { texture: srcTex, mipLevel: i },
+          data,
+          { bytesPerRow },
+          { width: m.width, height: m.height, depthOrArrayLayers: 1 }
+        );
       }
-
-      function float32ToFloat16(val) {
-        const floatView = new Float32Array(1);
-        const intView = new Uint32Array(floatView.buffer);
-
-        floatView[0] = val;
-        const x = intView[0];
-
-        const sign = (x >> 31) & 0x1;
-        let exp = ((x >> 23) & 0xFF) - 112;
-        let mant = (x >> 13) & 0x3FF;
-
-        if (exp <= 0) {
-            if (exp < -10) return sign << 15;
-            mant = (mant | 0x400) >> (1 - exp);
-            exp = 0;
-        } else if (exp >= 31) {
-            exp = 31;
-            mant = 0;
-        }
-
-        return (sign << 15) | (exp << 10) | mant;
-      }
-
-      function convertRGBA32FtoRGBA16F(src, width, height) {
-        const pixelCount = width * height;
-        const dst = new Uint16Array(pixelCount * 4); // 4 channels
-
-        const f32 = new Float32Array(src.buffer, src.byteOffset, pixelCount * 4);
-
-        for (let i = 0; i < pixelCount * 4; i++) {
-            dst[i] = float32ToFloat16(f32[i]);
-        }
-        return new Uint8Array(dst.buffer);
-      }
-
-      async function loadKTX2_ToTexture(file) {
-        if (!bcSupported) {
-          logApp('BC compressed textures not supported on this device.', 'error');
-          throw new Error('BC compressed textures not supported on this device.');
-        }
-        
-        logApp(`Loading KTX2 ${file.name}...`, 'info');
-        await waitForKTXParser();
-
-        const buf = await file.arrayBuffer();
-        const { header, levels, dfd, kvd } = await window.parseKTX2(buf);
-
-        const is2D = header.pixelDepth === 0 && header.faceCount === 1;
-        if (!is2D) {
-          logApp('Only 2D, 1-face KTX2 supported in this demo.', 'error');
-          throw new Error('Only 2D, 1-face KTX2 supported in this demo.');
-        }
-
-      const isBasisFormat = header.supercompressionScheme === 1;
-      if (header.supercompressionScheme !== 0 && !isBasisFormat) {
-        throw new Error('Supercompressed KTX2 (ZSTD/ZLIB) not supported. Only Basis Universal supported.');
-      }
-
-      // CHECK: What format is this?
-      const formatInfo = window.vkFormatToWebGPU(header.vkFormat);
-      if (!formatInfo) {
-        logApp(`Unsupported vkFormat ${header.vkFormat}. Supported: BC1-BC7.`, 'error');
-        throw new Error(`Unsupported vkFormat ${header.vkFormat}. Supported: BC1-BC7.`);
-      }
-
-      const isETC2 =
-        header.vkFormat === 152 ||    // VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK
-        header.vkFormat === 153 ||    // VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK
-        header.vkFormat === 147 ||    // ETC2 formats RGB
-        header.vkFormat === 148 ||
-        header.vkFormat === 149;
-
-        const isBlock = !!formatInfo.blockWidth; // BC formats
-        const isPixel = !!formatInfo.bytesPerPixel; // uncompressed
-
-      let { format: wgpuFormat, blockWidth, blockHeight, bytesPerBlock } = formatInfo;
-      const formatName = window.getFormatName ? window.getFormatName(header.vkFormat) : `vkFormat ${header.vkFormat}`;
-
-      if (
-          formatInfo.format.startsWith("etc2") &&
-          !adapter.features.has("texture-compression-etc2")
-      ) {
-          throw new Error("ETC2 textures are not supported on this GPU/browser.");
-      }
-
-      // let wgpuFormat, blockWidth, blockHeight, bytesPerBlock;
-      let transcodedLevels = null;
-
-      const nativeSupported = adapter.features.has("texture-compression-etc2");
-      // logApp("native ETC2 support:", nativeSupported);
-      const needsTranscode =
-        (isBasisFormat && header.vkFormat === 0) ||     // ETC1S, UASTC
-        (isETC2 && !nativeSupported);                   // ETC2 unsupported → transcode
-
-      if (isETC2 && nativeSupported) {
-        wgpuFormat = "etc2-rgba8unorm";   // or srgb variant
-        blockWidth = 4;
-        blockHeight = 4;
-        bytesPerBlock = 16;               // ETC2 is 64 bits per block = 8 bytes (RGB) or 16 bytes (RGBA)
-        
-        // ETC2_RGBA8 = 16 bytes per block
-        if (header.vkFormat === 152 || header.vkFormat === 153) {
-          bytesPerBlock = 16; // ETC2 RGBA8
-        } else {
-          bytesPerBlock = 8;  // ETC2 RGB formats
-        }
-
-        // mips: no transcoding, use raw level data
-        transcodedLevels = null;
-
-        logApp("ETC2 native path:", { wgpuFormat, bytesPerBlock });
-      }
-
-      // Special case: Basis Universal formats use VK_FORMAT_UNDEFINED (0)
-      else if (needsTranscode) {
-        let basisFormatName = 'Basis Universal';
-  if (dfd && dfd.length > 0) {
-    if (dfd[0].colorModel === 163) basisFormatName = 'ETC1S';
-    else if (dfd[0].colorModel === 166 || dfd[0].colorModel === 152) basisFormatName = 'UASTC';
-  }
-
-  stat.textContent = `Loading ${file.name}... initializing transcoder for ${basisFormatName}`;
-  meta.textContent = 'Initializing Basis Universal...';
-
-  try {
-    // Prefer your existing convenience wrapper if present (initLibKTX)
-    if (window.initLibKTX && typeof window.initLibKTX === 'function') {
-      await window.initLibKTX(); // preserves earlier behavior
-    }
-    // Then transcode
-    transcodedLevels = await transcodeBasisKTX2(buf, header, levels, dfd, device);
-
-    // If transcode returned numeric 'format' codes (Basis targets), map to WebGPU format strings:
-    // We'll prefer BC7 if target was BC7, etc. You may already have vkFormatToWebGPU or similar.
-    // For simplicity, set wgpuFormat to bc7 if device supports BC, otherwise use rgba8unorm.
-    if (device.features.has('texture-compression-bc')) {
-      wgpuFormat = 'bc7-rgba-unorm';
-      blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
-    } else {
-      // fallback: upload RGBA8 uncompressed
-      wgpuFormat = 'rgba8unorm';
-      blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
-      // Note: if using rgba8unorm ensure you use padRows() NOT padBlockRowsBC()
-    }
-
-    stat.textContent = `Transcoding ${transcodedLevels.length} levels...`;
-    console.log("Transcoding success:", transcodedLevels);
-  
-
-          
-        } catch (e) {
-          console.error(e);
-          logApp('Transcoding failed: ' + e.message);
-          stat.textContent = 'Error: ' + e.message;
-          throw e;
-        }
-      }
-
-      // PATH 1: NATIVE BC FORMAT - use existing code as-is
-      else if (formatInfo && !formatInfo.needsProcessing) {
-        const info = window.vkFormatToWebGPU(header.vkFormat);
-        wgpuFormat = info.format;
-        blockWidth = info.blockWidth;
-        blockHeight = info.blockHeight;
-        bytesPerBlock = info.bytesPerBlock;
-        
-        stat.textContent = `Loading ${file.name}...`;
-      } 
-      else {
-        throw new Error(`Unsupported format: ${window.getFormatName(header.vkFormat)}`);
-      }
-
-      let mipCount = transcodedLevels ? transcodedLevels.length : levels.length;
-
-
-      //srcTex?.destroy?.();
-      srcTex = device.createTexture({
-        size: { width: header.pixelWidth, height: header.pixelHeight, depthOrArrayLayers: 1 },
-        format: wgpuFormat,
-        mipLevelCount: mipCount,
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
-      });
 
       srcView = srcTex.createView();
+      mipCount = levels;
+      currentMip = 0;
+      mipSlider.min = 0;
+      mipSlider.max = Math.max(0, mipCount - 1);
+      mipSlider.value = 0;
+      mipLabel.textContent = '0';
+      mipControls.style.display = mipCount > 1 ? 'block' : 'none';
 
-        if (texPipeline) {
-            texBindGroup = makeTexBindGroup();
-        }
-
-      // Upload mip levels
-      for (let i = 0; i < mipCount; i++) {
-
-          const lvl = transcodedLevels ? transcodedLevels[i] : levels[i];
-        
-          if (isPixel) {
-            let raw = window.getLevelData(buf, lvl);
-
-            if (formatInfo.sourceChannels === 3) {
-                const pixelCount = lvl.width * lvl.height;
-                const rgba = new Uint8Array(pixelCount * 4);
-
-                for (let p = 0; p < pixelCount; p++) {
-                    rgba[p*4+0] = raw[p*3+0];
-                    rgba[p*4+1] = raw[p*3+1];
-                    rgba[p*4+2] = raw[p*3+2];
-                    rgba[p*4+3] = 255;
-                }
-                raw = rgba;
-            }
-
-            if (formatInfo.sourceBytesPerPixel === 16 && formatInfo.bytesPerPixel === 8) {
-                // Convert float32 → float16 per component
-                raw = convertRGBA32FtoRGBA16F(raw, lvl.width, lvl.height);
-            }
-
-
-            // Compute row padding
-            const { data, bytesPerRow } = padRows(
-                raw,
-                lvl.width,
-                lvl.height,
-                formatInfo.bytesPerPixel
-            );
-
-            device.queue.writeTexture(
-                { texture: srcTex, mipLevel: i },
-                data,
-                { bytesPerRow },
-                { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 }
-            );
-
-            continue; // Skip BC path
-          }
-
-          const raw = transcodedLevels 
-          ? transcodedLevels[i].data 
-          : window.getLevelData(buf, lvl); // not new Uint8Array(buf, lvl.byteOffset, lvl.byteLength); ?
-        
-          const { data, bytesPerRow, rowsPerImage } =
-            padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, blockWidth, blockHeight);
-          const uploadWidth = Math.ceil(lvl.width / blockWidth) * blockWidth;
-          const uploadHeight = Math.ceil(lvl.height / blockHeight) * blockHeight;
-          device.queue.writeTexture(
-            { texture: srcTex, mipLevel: i },
-            data,
-            { bytesPerRow, rowsPerImage },
-            { width: uploadWidth, height: uploadHeight, depthOrArrayLayers: 1 }
-          );
-        }
-
-        mipCount = levels.length || 1;
-        currentMip = 0;
-        mipSlider.min = 0;
-        mipSlider.max = Math.max(0, mipCount - 1);
-        mipSlider.value = 0;
-        mipLabel.textContent = '0';
-        mipControls.style.display = mipCount > 1 ? 'block' : 'none';
-
-        // Build metadata object for texture info panel
-        const compressionName = window.getSupercompressionName ? 
-          window.getSupercompressionName(header.supercompressionScheme) : 
-          (header.supercompressionScheme === 0 ? 'None' : `Scheme ${header.supercompressionScheme}`);
-        
-        const metadata = {
-          supercompression: compressionName
-        };
-        
-        if (kvd && Object.keys(kvd).length > 0) {
-          let kvdStr = Object.keys(kvd).join(', ');
-          if (kvd.KTXorientation) kvdStr += ` (orientation: ${kvd.KTXorientation})`;
-          metadata.kvd = kvdStr;
-        }
-        
-        if (dfd) {
-          metadata.dfd = `colorModel=${dfd.colorModel}, transfer=${dfd.transferFunction}`;
-        }
-        
-        stat.textContent = `Loaded ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${mipCount} mip${mipCount>1?'s':''})`;
-        meta.textContent = '';  // Clear old meta display
-        
-        // Update texture info panel with metadata
-        updateTextureInfo(file.size, header.pixelWidth, header.pixelHeight, formatName, mipCount, file.name, metadata);
-        
-        logApp(`Successfully loaded KTX2 ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${formatName}, ${mipCount} mips)`, 'success');
-      }
-
-      fileInp.addEventListener('change', async () => {
-        const f = fileInp.files?.[0];
-        if (!f) return;
-        
-        const fileName = f.name.toLowerCase();
-
-        try {
-          if (fileName.endsWith('.gltf') || fileName.endsWith('.glb')) {
-            // --- glTF Handling ---
-            window.currentGltfFile = f;
-            if (gltfControls) gltfControls.style.display = 'block';
-            
-            stat.textContent = `Selected: ${f.name}`;
-            meta.textContent = 'glTF detected. Click Validate button to analyze.';
-            texInfo.style.display = 'none'; // Hide texture info panel
-            
-            logApp(`Selected glTF file: ${f.name}`, 'info');
-          } else {
-            // --- Texture Handling ---
-            window.currentGltfFile = null;
-            if (gltfControls) gltfControls.style.display = 'none';
-            
-            if (fileName.endsWith('.ktx2')) {
-              await loadKTX2_ToTexture(f);
-            } else {
-              await loadImageToTexture(f);
-            }
-          }
-        } catch (e) {
-          console.error(e);
-          logApp('Failed to load ' + f.name + ': ' + (e.message || e), 'error');
-          stat.textContent = 'Error: ' + (e.message || e);
-        }
-      });
-
-      // ---------- Shader load & pipeline ----------
-      const shaderResponse = await fetch(window.shaderUri);
-      const shaderCode = await shaderResponse.text();
-
-      async function compileModule(code, label) {
-        const mod = device.createShaderModule({ code, label });
-        const info = await mod.getCompilationInfo();
-        if (info.messages?.length) {
-          console.group(`WGSL ${label} diagnostics`);
-          for (const m of info.messages) {
-            const logMsg = `${m.type} (${m.lineNum}:${m.linePos}): ${m.message}`;
-            console[m.type === 'error' ? 'error' : (m.type === 'warning' ? 'warn' : 'log')](logMsg);
-            if (m.type === 'error') {
-              logApp(`Shader ${label}: ${logMsg}`, 'error');
-            }
-          }
-          console.groupEnd();
-        }
-        return mod;
-      }
-
-      const shaderModule = await compileModule(shaderCode, 'shaders');
-      logApp('Shaders compiled', 'success');
-
-      let texPipeline = null;
-      let solidPipeline = null;
-
-      try {
-        texPipeline = await device.createRenderPipelineAsync({
-          layout: 'auto',
-          vertex:   { module: shaderModule, entryPoint: 'vs_textured' },
-          fragment: { module: shaderModule, entryPoint: 'fs_textured', targets: [{ format }] },
-          primitive:{ topology: 'triangle-list' }
-        });
-        logApp('Textured pipeline created', 'success');
-      } catch (e) {
-        console.error('Textured pipeline creation failed:', e);
-        logApp('Textured pipeline failed: ' + (e.message || e), 'error');
-      }
-
-      try {
-        solidPipeline = await device.createRenderPipelineAsync({
-          layout: 'auto',
-          vertex:   { module: shaderModule, entryPoint: 'vs_solid' },
-          fragment: { module: shaderModule, entryPoint: 'fs_solid', targets: [{ format }] },
-          primitive:{ topology: 'triangle-list' }
-        });
-        logApp('Solid pipeline created', 'success');
-      } catch (e) {
-        console.error('Solid pipeline creation failed:', e);
-        logApp('Solid pipeline failed: ' + (e.message || e), 'error');
-        throw new Error('Pipeline creation failed');
-      }
-
-      function makeTexBindGroup() {
-        const bgl0 = texPipeline.getBindGroupLayout(0);
-        return device.createBindGroup({
-          layout: bgl0,
-          entries: [
-            { binding: 0, resource: { buffer: uniformBuf } },
-            { binding: 1, resource: sampler },
-            { binding: 2, resource: srcView }
-          ]
-        });
-      }
-      let texBindGroup = texPipeline ? makeTexBindGroup() : null;
-
-      function applySelectedMip() {
-        if (srcTex && mipCount > 0 && mipOnlyBox.checked) {
-          srcView = srcTex.createView({ baseMipLevel: currentMip, mipLevelCount: 1 });
-        } else {
-          srcView = srcTex.createView();
-        }
-        if (texPipeline) texBindGroup = makeTexBindGroup();
-      }
-
-      // frame loop
-      function frame() {
-        configureIfNeeded();
-        updateUniforms();
-
-        const swap = context.getCurrentTexture();
-        const rtv = swap.createView();
-
-        const encoder = device.createCommandEncoder();
-
-        // Clear pass
-        {
-          const pass = encoder.beginRenderPass({
-            colorAttachments: [{
-              view: rtv,
-              clearValue: { r: 0.07, g: 0.07, b: 0.08, a: 1 },
-              loadOp: 'clear',
-              storeOp: 'store'
-            }]
-          });
-          pass.end();
-        }
-
-        // Draw pass
-        {
-          const pass = encoder.beginRenderPass({
-            colorAttachments: [{ view: rtv, loadOp: 'load', storeOp: 'store' }]
-          });
-
-          if (texPipeline && texBindGroup) {
-            pass.setPipeline(texPipeline);
-            pass.setBindGroup(0, texBindGroup);
-            pass.draw(3);
-          } else {
-            pass.setPipeline(solidPipeline);
-            pass.draw(3);
-          }
-          pass.end();
-        }
-
-        device.queue.submit([encoder.finish()]);
-        requestAnimationFrame(frame);
-      }
-      frame();
-
-      // Adapter info log
-      try {
-        const info = await adapter.requestAdapterInfo?.();
-        if (info) logApp(`GPU: ${info.vendor} ${info.architecture} ${info.description}`, 'info');
-      } catch {
-        // Silent fail
-      }
-
-      // Debug access
-      window._ktx2_demo = { device, adapter, srcTex, srcView, applySelectedMip };
-
-    } catch (e) {
-      console.error(e);
-      logApp(String(e.message || e), 'error');
+      bmp.close?.();
+      stat.textContent = `Loaded ${file.name} (${srcTex.size?.width || '??'}×${srcTex.size?.height || '??'})`;
+      meta.textContent = '';
+      if (texPipeline) texBindGroup = makeTexBindGroup();
+      
+      // Update texture info panel
+      updateTextureInfo(file.size, bmp.width, bmp.height, 'rgba8unorm', levels, file.name);
+      
+      logApp(`Successfully loaded ${file.name} (${bmp.width}×${bmp.height}, ${levels} mips)`, 'success');
     }
-  })();
+
+    function float32ToFloat16(val) {
+      const floatView = new Float32Array(1);
+      const intView = new Uint32Array(floatView.buffer);
+
+      floatView[0] = val;
+      const x = intView[0];
+
+      const sign = (x >> 31) & 0x1;
+      let exp = ((x >> 23) & 0xFF) - 112;
+      let mant = (x >> 13) & 0x3FF;
+
+      if (exp <= 0) {
+          if (exp < -10) return sign << 15;
+          mant = (mant | 0x400) >> (1 - exp);
+          exp = 0;
+      } else if (exp >= 31) {
+          exp = 31;
+          mant = 0;
+      }
+
+      return (sign << 15) | (exp << 10) | mant;
+    }
+
+    function convertRGBA32FtoRGBA16F(src, width, height) {
+      const pixelCount = width * height;
+      const dst = new Uint16Array(pixelCount * 4); // 4 channels
+
+      const f32 = new Float32Array(src.buffer, src.byteOffset, pixelCount * 4);
+
+      for (let i = 0; i < pixelCount * 4; i++) {
+          dst[i] = float32ToFloat16(f32[i]);
+      }
+      return new Uint8Array(dst.buffer);
+    }
+
+    async function loadKTX2_ToTexture(file) {
+      if (!bcSupported) {
+        logApp('BC compressed textures not supported on this device.', 'error');
+        throw new Error('BC compressed textures not supported on this device.');
+      }
+      
+      logApp(`Loading KTX2 ${file.name}...`, 'info');
+      await waitForKTXParser();
+
+      const buf = await file.arrayBuffer();
+      const { header, levels, dfd, kvd } = await window.parseKTX2(buf);
+
+      const is2D = header.pixelDepth === 0 && header.faceCount === 1;
+      if (!is2D) {
+        logApp('Only 2D, 1-face KTX2 supported in this demo.', 'error');
+        throw new Error('Only 2D, 1-face KTX2 supported in this demo.');
+      }
+
+    const isBasisFormat = header.supercompressionScheme === 1;
+    if (header.supercompressionScheme !== 0 && !isBasisFormat) {
+      throw new Error('Supercompressed KTX2 (ZSTD/ZLIB) not supported. Only Basis Universal supported.');
+    }
+
+    // CHECK: What format is this?
+    const formatInfo = window.vkFormatToWebGPU(header.vkFormat);
+    if (!formatInfo) {
+      logApp(`Unsupported vkFormat ${header.vkFormat}. Supported: BC1-BC7.`, 'error');
+      throw new Error(`Unsupported vkFormat ${header.vkFormat}. Supported: BC1-BC7.`);
+    }
+
+    const isETC2 =
+      header.vkFormat === 152 ||    // VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK
+      header.vkFormat === 153 ||    // VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK
+      header.vkFormat === 147 ||    // ETC2 formats RGB
+      header.vkFormat === 148 ||
+      header.vkFormat === 149;
+
+      const isBlock = !!formatInfo.blockWidth; // BC formats
+      const isPixel = !!formatInfo.bytesPerPixel; // uncompressed
+
+    let { format: wgpuFormat, blockWidth, blockHeight, bytesPerBlock } = formatInfo;
+    const formatName = window.getFormatName ? window.getFormatName(header.vkFormat) : `vkFormat ${header.vkFormat}`;
+
+    if (
+        formatInfo.format.startsWith("etc2") &&
+        !adapter.features.has("texture-compression-etc2")
+    ) {
+        throw new Error("ETC2 textures are not supported on this GPU/browser.");
+    }
+
+    // let wgpuFormat, blockWidth, blockHeight, bytesPerBlock;
+    let transcodedLevels = null;
+
+    const nativeSupported = adapter.features.has("texture-compression-etc2");
+    // logApp("native ETC2 support:", nativeSupported);
+    const needsTranscode =
+      (isBasisFormat && header.vkFormat === 0) ||     // ETC1S, UASTC
+      (isETC2 && !nativeSupported);                   // ETC2 unsupported → transcode
+
+    if (isETC2 && nativeSupported) {
+      wgpuFormat = "etc2-rgba8unorm";   // or srgb variant
+      blockWidth = 4;
+      blockHeight = 4;
+      bytesPerBlock = 16;               // ETC2 is 64 bits per block = 8 bytes (RGB) or 16 bytes (RGBA)
+      
+      // ETC2_RGBA8 = 16 bytes per block
+      if (header.vkFormat === 152 || header.vkFormat === 153) {
+        bytesPerBlock = 16; // ETC2 RGBA8
+      } else {
+        bytesPerBlock = 8;  // ETC2 RGB formats
+      }
+
+      // mips: no transcoding, use raw level data
+      transcodedLevels = null;
+
+      logApp("ETC2 native path:", { wgpuFormat, bytesPerBlock });
+    }
+
+    // Special case: Basis Universal formats use VK_FORMAT_UNDEFINED (0)
+    else if (needsTranscode) {
+      let basisFormatName = 'Basis Universal';
+if (dfd && dfd.length > 0) {
+  if (dfd[0].colorModel === 163) basisFormatName = 'ETC1S';
+  else if (dfd[0].colorModel === 166 || dfd[0].colorModel === 152) basisFormatName = 'UASTC';
+}
+
+stat.textContent = `Loading ${file.name}... initializing transcoder for ${basisFormatName}`;
+meta.textContent = 'Initializing Basis Universal...';
+
+try {
+  // Prefer your existing convenience wrapper if present (initLibKTX)
+  if (window.initLibKTX && typeof window.initLibKTX === 'function') {
+    await window.initLibKTX(); // preserves earlier behavior
+  }
+  // Then transcode
+  transcodedLevels = await transcodeBasisKTX2(buf, header, levels, dfd, device);
+
+  // If transcode returned numeric 'format' codes (Basis targets), map to WebGPU format strings:
+  // We'll prefer BC7 if target was BC7, etc. You may already have vkFormatToWebGPU or similar.
+  // For simplicity, set wgpuFormat to bc7 if device supports BC, otherwise use rgba8unorm.
+  if (device.features.has('texture-compression-bc')) {
+    wgpuFormat = 'bc7-rgba-unorm';
+    blockWidth = 4; blockHeight = 4; bytesPerBlock = 16;
+  } else {
+    // fallback: upload RGBA8 uncompressed
+    wgpuFormat = 'rgba8unorm';
+    blockWidth = 1; blockHeight = 1; bytesPerBlock = 4;
+    // Note: if using rgba8unorm ensure you use padRows() NOT padBlockRowsBC()
+  }
+
+  stat.textContent = `Transcoding ${transcodedLevels.length} levels...`;
+  console.log("Transcoding success:", transcodedLevels);
+
+
+        
+      } catch (e) {
+        console.error(e);
+        logApp('Transcoding failed: ' + e.message);
+        stat.textContent = 'Error: ' + e.message;
+        throw e;
+      }
+    }
+
+    // PATH 1: NATIVE BC FORMAT - use existing code as-is
+    else if (formatInfo && !formatInfo.needsProcessing) {
+      const info = window.vkFormatToWebGPU(header.vkFormat);
+      wgpuFormat = info.format;
+      blockWidth = info.blockWidth;
+      blockHeight = info.blockHeight;
+      bytesPerBlock = info.bytesPerBlock;
+      
+      stat.textContent = `Loading ${file.name}...`;
+    } 
+    else {
+      throw new Error(`Unsupported format: ${window.getFormatName(header.vkFormat)}`);
+    }
+
+    let mipCount = transcodedLevels ? transcodedLevels.length : levels.length;
+
+
+    //srcTex?.destroy?.();
+    srcTex = device.createTexture({
+      size: { width: header.pixelWidth, height: header.pixelHeight, depthOrArrayLayers: 1 },
+      format: wgpuFormat,
+      mipLevelCount: mipCount,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+    });
+
+    srcView = srcTex.createView();
+
+      if (texPipeline) {
+          texBindGroup = makeTexBindGroup();
+      }
+
+    // Upload mip levels
+    for (let i = 0; i < mipCount; i++) {
+
+        const lvl = transcodedLevels ? transcodedLevels[i] : levels[i];
+      
+        if (isPixel) {
+          let raw = window.getLevelData(buf, lvl);
+
+          if (formatInfo.sourceChannels === 3) {
+              const pixelCount = lvl.width * lvl.height;
+              const rgba = new Uint8Array(pixelCount * 4);
+
+              for (let p = 0; p < pixelCount; p++) {
+                  rgba[p*4+0] = raw[p*3+0];
+                  rgba[p*4+1] = raw[p*3+1];
+                  rgba[p*4+2] = raw[p*3+2];
+                  rgba[p*4+3] = 255;
+              }
+              raw = rgba;
+          }
+
+          if (formatInfo.sourceBytesPerPixel === 16 && formatInfo.bytesPerPixel === 8) {
+              // Convert float32 → float16 per component
+              raw = convertRGBA32FtoRGBA16F(raw, lvl.width, lvl.height);
+          }
+
+
+          // Compute row padding
+          const { data, bytesPerRow } = padRows(
+              raw,
+              lvl.width,
+              lvl.height,
+              formatInfo.bytesPerPixel
+          );
+
+          device.queue.writeTexture(
+              { texture: srcTex, mipLevel: i },
+              data,
+              { bytesPerRow },
+              { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 }
+          );
+
+          continue; // Skip BC path
+        }
+
+        const raw = transcodedLevels 
+        ? transcodedLevels[i].data 
+        : window.getLevelData(buf, lvl); // not new Uint8Array(buf, lvl.byteOffset, lvl.byteLength); ?
+      
+        const { data, bytesPerRow, rowsPerImage } =
+          padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, blockWidth, blockHeight);
+        const uploadWidth = Math.ceil(lvl.width / blockWidth) * blockWidth;
+        const uploadHeight = Math.ceil(lvl.height / blockHeight) * blockHeight;
+        device.queue.writeTexture(
+          { texture: srcTex, mipLevel: i },
+          data,
+          { bytesPerRow, rowsPerImage },
+          { width: uploadWidth, height: uploadHeight, depthOrArrayLayers: 1 }
+        );
+      }
+
+      mipCount = levels.length || 1;
+      currentMip = 0;
+      mipSlider.min = 0;
+      mipSlider.max = Math.max(0, mipCount - 1);
+      mipSlider.value = 0;
+      mipLabel.textContent = '0';
+      mipControls.style.display = mipCount > 1 ? 'block' : 'none';
+
+      // Build metadata object for texture info panel
+      const compressionName = window.getSupercompressionName ? 
+        window.getSupercompressionName(header.supercompressionScheme) : 
+        (header.supercompressionScheme === 0 ? 'None' : `Scheme ${header.supercompressionScheme}`);
+      
+      const metadata = {
+        supercompression: compressionName
+      };
+      
+      if (kvd && Object.keys(kvd).length > 0) {
+        let kvdStr = Object.keys(kvd).join(', ');
+        if (kvd.KTXorientation) kvdStr += ` (orientation: ${kvd.KTXorientation})`;
+        metadata.kvd = kvdStr;
+      }
+      
+      if (dfd) {
+        metadata.dfd = `colorModel=${dfd.colorModel}, transfer=${dfd.transferFunction}`;
+      }
+      
+      stat.textContent = `Loaded ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${mipCount} mip${mipCount>1?'s':''})`;
+      meta.textContent = '';  // Clear old meta display
+      
+      // Update texture info panel with metadata
+      updateTextureInfo(file.size, header.pixelWidth, header.pixelHeight, formatName, mipCount, file.name, metadata);
+      
+      logApp(`Successfully loaded KTX2 ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${formatName}, ${mipCount} mips)`, 'success');
+    }
+
+    fileInp.addEventListener('change', async () => {
+      const f = fileInp.files?.[0];
+      if (!f) return;
+      
+      const fileName = f.name.toLowerCase();
+
+      try {
+        if (fileName.endsWith('.gltf') || fileName.endsWith('.glb')) {
+          // --- glTF Handling ---
+          window.currentGltfFile = f;
+          if (gltfControls) gltfControls.style.display = 'block';
+          
+          stat.textContent = `Selected: ${f.name}`;
+          meta.textContent = 'glTF detected. Click Validate button to analyze.';
+          texInfo.style.display = 'none'; // Hide texture info panel
+          
+          logApp(`Selected glTF file: ${f.name}`, 'info');
+        } else {
+          // --- Texture Handling ---
+          window.currentGltfFile = null;
+          if (gltfControls) gltfControls.style.display = 'none';
+          
+          if (fileName.endsWith('.ktx2')) {
+            await loadKTX2_ToTexture(f);
+          } else {
+            await loadImageToTexture(f);
+          }
+        }
+      } catch (e) {
+        console.error(e);
+        logApp('Failed to load ' + f.name + ': ' + (e.message || e), 'error');
+        stat.textContent = 'Error: ' + (e.message || e);
+      }
+    });
+
+    // ---------- Shader load & pipeline ----------
+    const shaderResponse = await fetch(window.shaderUri);
+    const shaderCode = await shaderResponse.text();
+
+    async function compileModule(code, label) {
+      const mod = device.createShaderModule({ code, label });
+      const info = await mod.getCompilationInfo();
+      if (info.messages?.length) {
+        console.group(`WGSL ${label} diagnostics`);
+        for (const m of info.messages) {
+          const logMsg = `${m.type} (${m.lineNum}:${m.linePos}): ${m.message}`;
+          console[m.type === 'error' ? 'error' : (m.type === 'warning' ? 'warn' : 'log')](logMsg);
+          if (m.type === 'error') {
+            logApp(`Shader ${label}: ${logMsg}`, 'error');
+          }
+        }
+        console.groupEnd();
+      }
+      return mod;
+    }
+
+    const shaderModule = await compileModule(shaderCode, 'shaders');
+    logApp('Shaders compiled', 'success');
+
+    let texPipeline = null;
+    let solidPipeline = null;
+
+    try {
+      texPipeline = await device.createRenderPipelineAsync({
+        layout: 'auto',
+        vertex:   { module: shaderModule, entryPoint: 'vs_textured' },
+        fragment: { module: shaderModule, entryPoint: 'fs_textured', targets: [{ format }] },
+        primitive:{ topology: 'triangle-list' }
+      });
+      logApp('Textured pipeline created', 'success');
+    } catch (e) {
+      console.error('Textured pipeline creation failed:', e);
+      logApp('Textured pipeline failed: ' + (e.message || e), 'error');
+    }
+
+    try {
+      solidPipeline = await device.createRenderPipelineAsync({
+        layout: 'auto',
+        vertex:   { module: shaderModule, entryPoint: 'vs_solid' },
+        fragment: { module: shaderModule, entryPoint: 'fs_solid', targets: [{ format }] },
+        primitive:{ topology: 'triangle-list' }
+      });
+      logApp('Solid pipeline created', 'success');
+    } catch (e) {
+      console.error('Solid pipeline creation failed:', e);
+      logApp('Solid pipeline failed: ' + (e.message || e), 'error');
+      throw new Error('Pipeline creation failed');
+    }
+
+    function makeTexBindGroup() {
+      const bgl0 = texPipeline.getBindGroupLayout(0);
+      return device.createBindGroup({
+        layout: bgl0,
+        entries: [
+          { binding: 0, resource: { buffer: uniformBuf } },
+          { binding: 1, resource: sampler },
+          { binding: 2, resource: srcView }
+        ]
+      });
+    }
+    let texBindGroup = texPipeline ? makeTexBindGroup() : null;
+
+    function applySelectedMip() {
+      if (srcTex && mipCount > 0 && mipOnlyBox.checked) {
+        srcView = srcTex.createView({ baseMipLevel: currentMip, mipLevelCount: 1 });
+      } else {
+        srcView = srcTex.createView();
+      }
+      if (texPipeline) texBindGroup = makeTexBindGroup();
+    }
+
+    // frame loop
+    function frame() {
+      configureIfNeeded();
+      updateUniforms();
+
+      const swap = context.getCurrentTexture();
+      const rtv = swap.createView();
+
+      const encoder = device.createCommandEncoder();
+
+      // Clear pass
+      {
+        const pass = encoder.beginRenderPass({
+          colorAttachments: [{
+            view: rtv,
+            clearValue: { r: 0.07, g: 0.07, b: 0.08, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store'
+          }]
+        });
+        pass.end();
+      }
+
+      // Draw pass
+      {
+        const pass = encoder.beginRenderPass({
+          colorAttachments: [{ view: rtv, loadOp: 'load', storeOp: 'store' }]
+        });
+
+        if (texPipeline && texBindGroup) {
+          pass.setPipeline(texPipeline);
+          pass.setBindGroup(0, texBindGroup);
+          pass.draw(3);
+        } else {
+          pass.setPipeline(solidPipeline);
+          pass.draw(3);
+        }
+        pass.end();
+      }
+
+      device.queue.submit([encoder.finish()]);
+      requestAnimationFrame(frame);
+    }
+    frame();
+
+    // Adapter info log
+    try {
+      const info = await adapter.requestAdapterInfo?.();
+      if (info) logApp(`GPU: ${info.vendor} ${info.architecture} ${info.description}`, 'info');
+    } catch {
+      // Silent fail
+    }
+
+    // Debug access
+    window._ktx2_demo = { device, adapter, srcTex, srcView, applySelectedMip };
+
+  } catch (e) {
+    console.error(e);
+    logApp(String(e.message || e), 'error');
+  }
+})();
