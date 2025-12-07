@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta
     http-equiv="Content-Security-Policy"
-    content="default-src 'none'; style-src 'unsafe-inline' {{cspSource}}; img-src {{cspSource}}; script-src 'nonce-{{nonce}}'; connect-src {{cspSource}};"
+    content="default-src 'none'; style-src 'unsafe-inline' {{cspSource}}; img-src {{cspSource}}; script-src 'nonce-{{nonce}}' 'unsafe-eval'; connect-src {{cspSource}};"
   />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>WebGPU KTX2 Viewer</title>
@@ -91,7 +91,6 @@
     <canvas id="gfx"></canvas>
     <div id="log">Initializing…</div>
     
-    <!-- Validation Results Overlay -->
     <div id="validation-overlay">
       <div class="validation-header">
         <h3 style="margin:0; color:#ccc;">glTF Validation Results</h3>
@@ -103,6 +102,9 @@
   
   <script nonce="{{nonce}}">
     window.shaderUri = '{{shaderUri}}';
+
+    window.BASIS_JS = "{{basisJsUri}}";
+    window.BASIS_WASM = "{{basisWasmUri}}";
     
     // Injected sidebar template
     window.sidebarTemplate = `{{sidebarHtml}}`;

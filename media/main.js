@@ -584,17 +584,19 @@
         return new Uint8Array(dst.buffer);
       }
 
-      async function loadKTX2_ToTexture(file) {
+            async function loadKTX2_ToTexture(file) {
+        // Require BC on this device (same as before)
         if (!bcSupported) {
           logApp('BC compressed textures not supported on this device.', 'error');
           throw new Error('BC compressed textures not supported on this device.');
         }
-        
+
         logApp(`Loading KTX2 ${file.name}...`, 'info');
         await waitForKTXParser();
 
         const buf = await file.arrayBuffer();
-        const { header, levels, dfd, kvd } = await window.parseKTX2(buf);
+        // Pass device so parseKTX2 can do transcoding / feature-based decisions
+        const { header, levels, dfd, kvd } = await window.parseKTX2(buf, device);
 
         const is2D = header.pixelDepth === 0 && header.faceCount === 1;
         if (!is2D) {
@@ -602,100 +604,215 @@
           throw new Error('Only 2D, 1-face KTX2 supported in this demo.');
         }
 
-        const formatInfo = window.vkFormatToWebGPU(header.vkFormat);
-        if (!formatInfo) throw new Error(`Unsupported vkFormat ${header.vkFormat}`);
+        let wgpuFormat = null;
+        let blockWidth = 1, blockHeight = 1, bytesPerBlock = 0;
+        let isPixel = false;   // uncompressed flag
+        let isBlock = false;   // block-compressed flag
+        let formatInfo = null; // vkFormat mapping for uncompressed/BC paths
 
-        const isBlock = !!formatInfo.blockWidth; // BC formats
-        const isPixel = !!formatInfo.bytesPerPixel; // uncompressed
+        // ==================================================================================
+        // 1. SUPERCOMPRESSED BASIS/UASTC PATH (ETC1S / UASTC transcoded by parseKTX2)
+        // ==================================================================================
+        const isTranscoded = levels[0]?.isDecompressed;
 
-        const { format: wgpuFormat, blockWidth, blockHeight, bytesPerBlock } = formatInfo;
-        const formatName = window.getFormatName ? window.getFormatName(header.vkFormat) : `vkFormat ${header.vkFormat}`;
+        if (isTranscoded) {
+          const tf = levels[0].transcodedFormat;
+          logApp(`Using pre-transcoded Basis data (format ID: ${tf})`, 'info');
 
+          switch (tf) {
+            case 6:  // BC7
+              wgpuFormat   = 'bc7-rgba-unorm';
+              blockWidth   = 4;
+              blockHeight  = 4;
+              bytesPerBlock = 16;
+              isBlock = true;
+              break;
+
+            case 1:  // BC3
+              wgpuFormat   = 'bc3-rgba-unorm';
+              blockWidth   = 4;
+              blockHeight  = 4;
+              bytesPerBlock = 16;
+              isBlock = true;
+              break;
+
+            case 0:  // BC1
+              wgpuFormat   = 'bc1-rgba-unorm';
+              blockWidth   = 4;
+              blockHeight  = 4;
+              bytesPerBlock = 8;
+              isBlock = true;
+              break;
+
+            case 13: // RGBA32 → treat as RGBA8 uncompressed
+            default:
+              wgpuFormat = 'rgba8unorm';
+              isPixel    = true;
+              formatInfo = {
+                format: 'rgba8unorm',
+                bytesPerPixel: 4,
+                sourceChannels: 4,
+                sourceBytesPerPixel: 4
+              };
+              break;
+          }
+        }
+
+        // ==================================================================================
+        // 2. NATIVE ETC2 PATH (if no transcoding and vkFormat is ETC2 range)
+        // ==================================================================================
+        else if ((header.vkFormat >= 147 && header.vkFormat <= 153) &&
+                 adapter.features.has('texture-compression-etc2')) {
+
+          logApp('Using native ETC2', 'info');
+
+          const isRGBA = (header.vkFormat === 152 || header.vkFormat === 153);
+
+          wgpuFormat   = isRGBA ? 'etc2-rgba8unorm' : 'etc2-rgb8unorm';
+          blockWidth   = 4;
+          blockHeight  = 4;
+          bytesPerBlock = isRGBA ? 16 : 8;
+          isBlock = true;
+        }
+
+        // ==================================================================================
+        // 3. GENERAL PATH: USE vkFormatToWebGPU FOR BC + UNCOMPRESSED FORMATS
+        // ==================================================================================
+        else {
+          formatInfo = window.vkFormatToWebGPU(header.vkFormat);
+          if (!formatInfo) {
+            throw new Error(`Unsupported vkFormat ${header.vkFormat}`);
+          }
+
+          wgpuFormat   = formatInfo.format;
+          blockWidth   = formatInfo.blockWidth  || 1;
+          blockHeight  = formatInfo.blockHeight || 1;
+          bytesPerBlock = formatInfo.bytesPerBlock || 0;
+
+          isPixel = !!formatInfo.bytesPerPixel;
+          isBlock = !!formatInfo.blockWidth;
+        }
+
+        // Extra safety: feature guards for ETC2 / ASTC when using vkFormatToWebGPU mapping
         if (
-            formatInfo.format.startsWith("etc2") &&
-            !adapter.features.has("texture-compression-etc2")
+          wgpuFormat.startsWith('etc2') &&
+          !adapter.features.has('texture-compression-etc2')
         ) {
-            throw new Error("ETC2 textures are not supported on this GPU/browser.");
+          throw new Error('ETC2 textures are not supported on this GPU/browser.');
         }
 
         if (
-            formatInfo.format.startsWith("astc") &&
-            !adapter.features.has("texture-compression-astc")
+          wgpuFormat.startsWith('astc') &&
+          !adapter.features.has('texture-compression-astc')
         ) {
-            throw new Error("ASTC textures are not supported on this GPU/browser.");
+          throw new Error('ASTC textures are not supported on this GPU/browser.');
         }
 
+        // ==================================================================================
+        // 4. CREATE TEXTURE
+        // ==================================================================================
         srcTex?.destroy?.();
         srcTex = device.createTexture({
-          size: { width: header.pixelWidth, height: header.pixelHeight, depthOrArrayLayers: 1 },
+          size: {
+            width: header.pixelWidth,
+            height: header.pixelHeight,
+            depthOrArrayLayers: 1
+          },
           format: wgpuFormat,
           mipLevelCount: levels.length,
           usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
         });
 
         srcView = srcTex.createView();
-
         if (texPipeline) {
-            texBindGroup = makeTexBindGroup();
+          texBindGroup = makeTexBindGroup();
         }
 
-        
+        // ==================================================================================
+        // 5. MIP UPLOAD LOOP (handles both uncompressed + block-compressed)
+        // ==================================================================================
         for (let i = 0; i < levels.length; i++) {
-
           const lvl = levels[i];
+
+          let raw = lvl.isDecompressed
+            ? lvl.decompressedData
+            : window.getLevelData(buf, lvl);
+
+          // ---------------- UNCOMPRESSED PIXEL PATH ----------------
           if (isPixel) {
-            let raw = window.getLevelData(buf, lvl);
-
-            if (formatInfo.sourceChannels === 3) {
-                const pixelCount = lvl.width * lvl.height;
-                const rgba = new Uint8Array(pixelCount * 4);
-
-                for (let p = 0; p < pixelCount; p++) {
-                    rgba[p*4+0] = raw[p*3+0];
-                    rgba[p*4+1] = raw[p*3+1];
-                    rgba[p*4+2] = raw[p*3+2];
-                    rgba[p*4+3] = 255;
-                }
-                raw = rgba;
+            // If RGB8 → expand to RGBA8
+            if (formatInfo && formatInfo.sourceChannels === 3) {
+              const pixelCount = lvl.width * lvl.height;
+              const rgba = new Uint8Array(pixelCount * 4);
+              for (let p = 0; p < pixelCount; p++) {
+                rgba[p * 4 + 0] = raw[p * 3 + 0];
+                rgba[p * 4 + 1] = raw[p * 3 + 1];
+                rgba[p * 4 + 2] = raw[p * 3 + 2];
+                rgba[p * 4 + 3] = 255;
+              }
+              raw = rgba;
             }
 
-            if (formatInfo.sourceBytesPerPixel === 16 && formatInfo.bytesPerPixel === 8) {
-                // Convert float32 → float16 per component
-                raw = convertRGBA32FtoRGBA16F(raw, lvl.width, lvl.height);
+            // If RGBA32F → downconvert to RGBA16F
+            if (
+              formatInfo &&
+              formatInfo.sourceBytesPerPixel === 16 &&
+              formatInfo.bytesPerPixel === 8
+            ) {
+              raw = convertRGBA32FtoRGBA16F(raw, lvl.width, lvl.height);
             }
 
-
-            // Compute row padding
             const { data, bytesPerRow } = padRows(
-                raw,
-                lvl.width,
-                lvl.height,
-                formatInfo.bytesPerPixel
+              raw,
+              lvl.width,
+              lvl.height,
+              formatInfo ? formatInfo.bytesPerPixel : 4
             );
 
             device.queue.writeTexture(
-                { texture: srcTex, mipLevel: i },
-                data,
-                { bytesPerRow },
-                { width: lvl.width, height: lvl.height, depthOrArrayLayers: 1 }
+              { texture: srcTex, mipLevel: i },
+              data,
+              { bytesPerRow },
+              {
+                width: lvl.width,
+                height: lvl.height,
+                depthOrArrayLayers: 1
+              }
             );
 
-            continue; // Skip BC path
+            continue; // skip block path for this mip
           }
 
-          const raw = window.getLevelData(buf, lvl);
-          const { data, bytesPerRow, rowsPerImage } =
-            padBlockRowsBC(raw, lvl.width, lvl.height, bytesPerBlock, blockWidth, blockHeight);
-          const uploadWidth = Math.ceil(lvl.width / blockWidth) * blockWidth;
-          const uploadHeight = Math.ceil(lvl.height / blockHeight) * blockHeight;
-          device.queue.writeTexture(
-            { texture: srcTex, mipLevel: i },
-            data,
-            { bytesPerRow, rowsPerImage },
-            { width: uploadWidth, height: uploadHeight, depthOrArrayLayers: 1 }
-          );
+          // ---------------- BLOCK-COMPRESSED PATH ----------------
+          if (isBlock) {
+            const { data, bytesPerRow, rowsPerImage } = padBlockRowsBC(
+              raw,
+              lvl.width,
+              lvl.height,
+              bytesPerBlock,
+              blockWidth,
+              blockHeight
+            );
+
+            const uploadWidth  = Math.ceil(lvl.width  / blockWidth)  * blockWidth;
+            const uploadHeight = Math.ceil(lvl.height / blockHeight) * blockHeight;
+
+            device.queue.writeTexture(
+              { texture: srcTex, mipLevel: i },
+              data,
+              { bytesPerRow, rowsPerImage },
+              {
+                width: uploadWidth,
+                height: uploadHeight,
+                depthOrArrayLayers: 1
+              }
+            );
+          }
         }
 
+        // ==================================================================================
+        // 6. MIP UI + METADATA PANEL (same as UI version)
+        // ==================================================================================
         mipCount = levels.length || 1;
         currentMip = 0;
         mipSlider.min = 0;
@@ -704,33 +821,51 @@
         mipLabel.textContent = '0';
         mipControls.style.display = mipCount > 1 ? 'block' : 'none';
 
-        // Build metadata object for texture info panel
-        const compressionName = window.getSupercompressionName ? 
-          window.getSupercompressionName(header.supercompressionScheme) : 
-          (header.supercompressionScheme === 0 ? 'None' : `Scheme ${header.supercompressionScheme}`);
-        
+        const formatName = window.getFormatName
+          ? window.getFormatName(header.vkFormat)
+          : wgpuFormat;
+
+        const compressionName = window.getSupercompressionName
+          ? window.getSupercompressionName(header.supercompressionScheme)
+          : (header.supercompressionScheme === 0
+              ? 'None'
+              : `Scheme ${header.supercompressionScheme}`);
+
         const metadata = {
           supercompression: compressionName
         };
-        
+
         if (kvd && Object.keys(kvd).length > 0) {
           let kvdStr = Object.keys(kvd).join(', ');
-          if (kvd.KTXorientation) kvdStr += ` (orientation: ${kvd.KTXorientation})`;
+          if (kvd.KTXorientation) {
+            kvdStr += ` (orientation: ${kvd.KTXorientation})`;
+          }
           metadata.kvd = kvdStr;
         }
-        
+
         if (dfd) {
           metadata.dfd = `colorModel=${dfd.colorModel}, transfer=${dfd.transferFunction}`;
         }
-        
-        stat.textContent = `Loaded ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${mipCount} mip${mipCount>1?'s':''})`;
-        meta.textContent = '';  // Clear old meta display
-        
-        // Update texture info panel with metadata
-        updateTextureInfo(file.size, header.pixelWidth, header.pixelHeight, formatName, mipCount, file.name, metadata);
-        
-        logApp(`Successfully loaded KTX2 ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${formatName}, ${mipCount} mips)`, 'success');
+
+        stat.textContent = `Loaded ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${mipCount} mip${mipCount > 1 ? 's' : ''})`;
+        meta.textContent = '';
+
+        updateTextureInfo(
+          file.size,
+          header.pixelWidth,
+          header.pixelHeight,
+          formatName,
+          mipCount,
+          file.name,
+          metadata
+        );
+
+        logApp(
+          `Successfully loaded KTX2 ${file.name} (${header.pixelWidth}×${header.pixelHeight}, ${formatName}, ${mipCount} mips)`,
+          'success'
+        );
       }
+
 
       fileInp.addEventListener('change', async () => {
         const f = fileInp.files?.[0];
