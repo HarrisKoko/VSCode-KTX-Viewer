@@ -35,6 +35,9 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.Uri.joinPath(context.extensionUri, 'media', 'shaders.wgsl')
       );
 
+      const basisJsUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'basis_transcoder.js'));
+      const basisWasmUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'basisu', 'basis_transcoder.wasm'));
+
       // Handle messages from the webview
       panel.webview.onDidReceiveMessage(
         async (message) => {
@@ -64,7 +67,9 @@ export function activate(context: vscode.ExtensionContext) {
         .replace(/\{\{readUri\}\}/g, readUri.toString())
         .replace(/\{\{scriptUri\}\}/g, scriptUri.toString())
         .replace(/\{\{shaderUri\}\}/g, shaderUri.toString())
-        .replace(/\{\{sidebarHtml\}\}/g, sidebarHtml.replace(/`/g, '\\`').replace(/\$/g, '\\$'));
+        .replace(/\{\{sidebarHtml\}\}/g, sidebarHtml.replace(/`/g, '\\`').replace(/\$/g, '\\$'))
+        .replace(/\{\{basisJsUri\}\}/g, basisJsUri.toString())
+        .replace(/\{\{basisWasmUri\}\}/g, basisWasmUri.toString());
 
       panel.webview.html = html;
     })
