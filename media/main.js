@@ -228,6 +228,7 @@
       const format = navigator.gpu.getPreferredCanvasFormat();
 
       // UI refs (now guaranteed to exist either via template or injection)
+      const tonemapSelect = document.getElementById('tonemapSelect');
       const evInput = document.getElementById('ev');
       const evVal   = document.getElementById('evv');
       const fileInp = document.getElementById('file');
@@ -369,14 +370,22 @@
         size: 256,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
       });
+
+      let tonemapType = 0; // 0 - none, 1 - Reinhard, 2 - Hable(ACES Approximation), 3 - ACES2065-1
       let exposureEV = 0;
       function updateUniforms() {
         const mul = Math.pow(2, exposureEV);
         const ch = getChannelMultipliers();
-        const arr = new Float32Array([exposureEV, mul, lastW, lastH, ch.r, ch.g, ch.b, ch.a]);
+        const arr = new Float32Array([exposureEV, mul, lastW, lastH, ch.r, ch.g, ch.b, ch.a, tonemapType]);
         device.queue.writeBuffer(uniformBuf, 0, arr.buffer);
       }
 
+      // tonemapType select
+      tonemapSelect.oninput = () => { 
+        tonemapType = parseInt(tonemapSelect.value); 
+      }
+
+      // exposure slider
       evInput.oninput = () => {
         exposureEV = parseFloat(evInput.value);
         evVal.textContent = evInput.value;
